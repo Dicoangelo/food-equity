@@ -3,6 +3,7 @@ Seattle Food Equity & Surplus Broker - FastAPI Server & Interactive UI
 Exposes REST API endpoints for team integration and serves an interactive Map Dashboard.
 """
 
+import asyncio
 import os
 import logging
 import json
@@ -14,10 +15,12 @@ from datetime import datetime, timezone
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal, Optional
-from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, ConfigDict, Field, field_validator
+from starlette.datastructures import Headers, MutableHeaders
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 
 logging.basicConfig(level=logging.INFO)
@@ -49,38 +52,84 @@ app = FastAPI(
 )
 
 
-@app.middleware("http")
-async def request_telemetry(request: Request, call_next):
-    supplied_id = request.headers.get("x-request-id", "")
-    request_id = supplied_id.lower() if re.fullmatch(
-        r"[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}", supplied_id
-    ) else str(uuid4())
-    started = time.perf_counter()
-    try:
-        response = await call_next(request)
-    except Exception:
-        # Never serialize exception text, request content or credentials into logs.
-        response = JSONResponse(status_code=500, content={
-            "status": "error", "message": "The request could not complete. Retry and share the request ID with the team.",
-            "request_id": request_id,
-        })
-    response.headers["X-Request-ID"] = request_id
-    route = request.scope.get("route")
-    metadata = release_info()
-    request_logger.info(json.dumps({
-        "severity": "ERROR" if response.status_code >= 500 else "INFO",
-        "event": "http_request",
-        "method": request.method if request.method in {"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"} else "OTHER",
-        # A known route template cannot contain user-supplied path/query data.
-        "path": getattr(route, "path", "<unmatched>"),
-        "status": response.status_code,
-        "duration_ms": round((time.perf_counter() - started) * 1000, 3),
-        "request_id": request_id,
-        "revision": metadata["revision"],
-        "commit_sha": metadata["commit_sha"],
-        "service": metadata["service"],
-    }, separators=(",", ":")))
-    return response
+class RequestTelemetryMiddleware:
+    """Observe HTTP traffic without replacing its streaming response lifecycle."""
+
+    def __init__(self, app: ASGIApp):
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        supplied_id = Headers(scope=scope).get("x-request-id", "")
+        request_id = supplied_id.lower() if re.fullmatch(
+            r"[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}", supplied_id
+        ) else str(uuid4())
+        started = time.perf_counter()
+        response_started = False
+        disconnected = False
+        status = None
+        headers_duration_ms = None
+        failed = False
+
+        async def observed_receive() -> Message:
+            nonlocal disconnected
+            message = await receive()
+            if message["type"] == "http.disconnect":
+                disconnected = True
+            return message
+
+        async def observed_send(message: Message) -> None:
+            nonlocal response_started, disconnected, status, headers_duration_ms
+            if message["type"] == "http.response.start":
+                response_started = True
+                status = message["status"]
+                headers_duration_ms = round((time.perf_counter() - started) * 1000, 3)
+                message = {**message, "headers": list(message.get("headers", []))}
+                MutableHeaders(scope=message)["X-Request-ID"] = request_id
+            try:
+                await send(message)
+            except OSError:
+                disconnected = True
+                raise
+        try:
+            await self.app(scope, observed_receive, observed_send)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            failed = True
+            if response_started or disconnected:
+                # A started response cannot become a second JSON response.
+                # Preserve transport errors so the response can close its work.
+                raise
+            # Never serialize exception text, request content or credentials.
+            response = JSONResponse(status_code=500, content={
+                "status": "error", "message": "The request could not complete. Retry and share the request ID with the team.",
+                "request_id": request_id,
+            })
+            await response(scope, observed_receive, observed_send)
+        finally:
+            route = scope.get("route")
+            metadata = release_info()
+            method = scope.get("method")
+            request_logger.info(json.dumps({
+                "severity": "ERROR" if (failed and not disconnected) or (status is not None and status >= 500) else "INFO",
+                "event": "http_request",
+                "method": method if method in {"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"} else "OTHER",
+                # A known route template cannot contain request path/query data.
+                "path": getattr(route, "path", "<unmatched>"),
+                "status": status,
+                "duration_ms": headers_duration_ms if headers_duration_ms is not None else round((time.perf_counter() - started) * 1000, 3),
+                "request_id": request_id,
+                "revision": metadata["revision"],
+                "commit_sha": metadata["commit_sha"],
+                "service": metadata["service"],
+            }, separators=(",", ":")))
+
+
+app.add_middleware(RequestTelemetryMiddleware)
 
 
 try:
@@ -244,25 +293,22 @@ def version():
     return JSONResponse(content=release_info(), headers={"Cache-Control": "no-store"})
 
 
-@app.post("/api/match")
-async def match_surplus(req: MatchRequest):
-    """Run the ADK/MCP broker; a returned draft is never a secured donation."""
+def broker_arguments(req: MatchRequest):
+    """Validate the fixed donor clock before starting either response transport."""
     hours_remaining = req.hours_remaining
     if req.deadline_at is not None:
         hours_remaining = min(hours_remaining, (req.deadline_at - datetime.now(timezone.utc)).total_seconds() / 3600)
         if hours_remaining <= 0:
             raise HTTPException(status_code=422, detail="The pickup deadline has passed. Update the offer before matching.")
+    return {**req.model_dump(exclude={"hours_remaining"}), "hours_remaining": hours_remaining}
+
+
+@app.post("/api/match")
+async def match_surplus(req: MatchRequest):
+    """Run the ADK/MCP broker; a returned draft is never a secured donation."""
+    arguments = broker_arguments(req)
     try:
-        result = await get_broker_agent().broker_posting_async(
-            posting_text=req.posting_text,
-            required_storage=req.required_storage,
-            pallet_count=req.pallet_count,
-            hours_remaining=hours_remaining,
-            donor_name=req.donor_name,
-            donor_lat=req.donor_lat,
-            donor_lon=req.donor_lon,
-            deadline_at=req.deadline_at,
-        )
+        result = await get_broker_agent().broker_posting_async(**arguments)
     except Exception as exc:
         # Cloud errors can include sensitive identifiers; return a stable public error.
         logger.error("Broker request failed (%s)", type(exc).__name__)
@@ -271,6 +317,32 @@ async def match_surplus(req: MatchRequest):
             "generation_mode": "unavailable", "requires_confirmation": True,
         })
     return JSONResponse(content=result)
+
+
+@app.post("/api/match/stream")
+async def match_surplus_stream(req: MatchRequest):
+    """Stream real, sanitized stages; disconnect cancels this request's worker."""
+    try:
+        from .match_stream import MatchStreamingResponse, stream_match
+    except ImportError:
+        try:
+            from agent.match_stream import MatchStreamingResponse, stream_match
+        except ImportError:
+            from match_stream import MatchStreamingResponse, stream_match
+    arguments = broker_arguments(req)
+
+    async def run(report):
+        return await get_broker_agent().broker_posting_async(**arguments, progress_callback=report)
+
+    return MatchStreamingResponse(
+        stream_match(run), media_type="application/x-ndjson",
+        headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"},
+    )
+
+
+@app.get("/ui/offer-workflow.js", include_in_schema=False)
+def offer_workflow_script():
+    return FileResponse(Path(__file__).parent / "ui/offer-workflow.js", media_type="text/javascript")
 
 
 @app.get("/ui/recipient-explorer.js", include_in_schema=False)
@@ -581,6 +653,7 @@ def index_dashboard():
         <h2 id="result-title" class="text-xl font-semibold text-ink">An offer comes first</h2>
         <p id="result-description" class="text-sm text-secondary mt-2">Enter the surplus and pickup window. The broker will retrieve candidates and check storage, capacity and timing before proposing a recipient.</p>
         <p id="result-counts" class="status-copy"></p>
+        <button id="btn-cancel-match" class="action-secondary hidden mt-3" type="button" onclick="cancelMatching()">Cancel check</button>
         <div id="result-actions" class="result-actions hidden">
           <button id="action-review-offer" class="action-secondary" onclick="focusSection('offer-panel')">Review offer</button>
           <button id="action-retry" class="action-secondary hidden" onclick="runMatching()">Retry live check</button>
@@ -758,6 +831,7 @@ def index_dashboard():
     <div id="recipient-detail-content"></div>
   </aside>
 
+  <script src="/ui/offer-workflow.js"></script>
   <!-- Leaflet & App JS -->
   <script>
     let map;
@@ -768,10 +842,10 @@ def index_dashboard():
     let cityPayload = null;
     let currentPayload = null;
     let selectedOrigin = {latitude: 47.6097, longitude: -122.3422};
-    let currentOfferKey = null;
-    let pickupDeadline = null;
-    let appliedVoiceDeadline = null;
+    const offerClock = new OfferWorkflow.OfferClock();
     let matchInFlight = false;
+    let activeMatchController = null;
+    let matchStopReason = null;
     let scenarioButtons = [];
     const offerFieldIds = ['input-donor','input-text','input-storage','input-pallets','input-hours'];
 
@@ -819,7 +893,7 @@ def index_dashboard():
       document.getElementById('result-counts').textContent = counts;
       const active = !['idle','loading'].includes(state);
       document.getElementById('result-actions').classList.toggle('hidden',!active);
-      document.getElementById('action-retry').classList.toggle('hidden',state !== 'blocked');
+      document.getElementById('action-retry').classList.toggle('hidden',!['blocked','canceled'].includes(state));
       const hasMatch = ['success','draft'].includes(state);
       document.getElementById('action-handoff').classList.toggle('hidden',!hasMatch);
       document.getElementById('step-handoff').disabled = !hasMatch;
@@ -827,9 +901,7 @@ def index_dashboard():
     function offerChanged(field) {
       if (matchInFlight) return;
       if (field === 'hours') {
-        appliedVoiceDeadline = null;
-        currentOfferKey = null;
-        pickupDeadline = null;
+        offerClock.reset();
         document.getElementById('voice-clock-note').classList.add('hidden');
       }
       if (voice.socket || voice.starting) stopVoiceSession('Offer changed. Start a new session to use the updated form.');
@@ -911,7 +983,7 @@ def index_dashboard():
       if (Number.isFinite(hours) && hours > 0 && hours <= 168) fields.hours_remaining = hours;
       if (validPoint(selectedOrigin)) { fields.donor_lat = selectedOrigin.latitude; fields.donor_lon = selectedOrigin.longitude; }
       try { fields.deadline_at = buildRequest().deadline_at; }
-      catch (_) { if (appliedVoiceDeadline) fields.deadline_at = appliedVoiceDeadline; }
+      catch (_) { if (offerClock.deadline) fields.deadline_at = offerClock.deadline; }
       return fields;
     }
     function renderVoiceDraft(message) {
@@ -1137,8 +1209,7 @@ def index_dashboard():
       document.getElementById('input-pallets').value = fields.pallet_count;
       document.getElementById('input-hours').value = fields.hours_remaining;
       selectedOrigin = {latitude:fields.donor_lat,longitude:fields.donor_lon};
-      appliedVoiceDeadline = pickupDeadline = fields.deadline_at;
-      currentOfferKey = null;
+      offerClock.apply(fields.deadline_at, fields.hours_remaining);
       document.getElementById('origin-note').textContent = `Reviewed origin: ${fields.donor_lat}, ${fields.donor_lon}. Confirm the actual pickup location; any demo coordinates remain approximate.`;
       const clock = document.getElementById('voice-clock-note');
       clock.textContent = `Fixed pickup deadline: ${fields.deadline_at}. Editing the hours field explicitly replaces this clock; other offer edits preserve it.`;
@@ -1383,9 +1454,7 @@ def index_dashboard():
       document.getElementById('input-pallets').value = sc.pallet_count;
       document.getElementById('input-hours').value = sc.hours_remaining;
       selectedOrigin = {latitude: sc.donor_lat, longitude: sc.donor_lon};
-      currentOfferKey = null;
-      pickupDeadline = null;
-      appliedVoiceDeadline = null;
+      offerClock.reset();
       document.getElementById('voice-clock-note').classList.add('hidden');
       document.getElementById('origin-note').textContent = `Origin: ${sc.donor_name} demo coordinates. Pallet quantity is a scenario assumption; confirm the actual volume.`;
       setStatus(sc.notes || 'Scenario loaded. Review the offer, then run a live match.');
@@ -1436,23 +1505,35 @@ def index_dashboard():
       if (!req.donor_name || req.posting_text.length < 5) throw new Error('Add a donor name and a surplus description.');
       if (!Number.isFinite(req.pallet_count) || req.pallet_count <= 0 || req.pallet_count > 10000) throw new Error('Enter a positive pallet quantity, up to 10,000.');
       if (!Number.isFinite(req.hours_remaining) || req.hours_remaining <= 0 || req.hours_remaining > 168) throw new Error('Enter a pickup window greater than zero and at most 168 hours.');
-      const key = JSON.stringify(req);
-      if (appliedVoiceDeadline) {
-        if (!(Date.parse(appliedVoiceDeadline) > Date.now())) throw new Error('The reviewed pickup deadline has passed. Confirm a new window with the donor.');
-        pickupDeadline = appliedVoiceDeadline;
-        currentOfferKey = key;
-      } else if (key !== currentOfferKey) {
-        currentOfferKey = key;
-        pickupDeadline = new Date(Date.now() + req.hours_remaining * 3600000).toISOString();
-      }
-      req.deadline_at = pickupDeadline;
+      req.deadline_at = offerClock.forOffer(req.hours_remaining);
+      const clock = document.getElementById('voice-clock-note');
+      clock.textContent = `Fixed pickup deadline: ${req.deadline_at}. Only change the pickup window when the donor confirms a new deadline.`;
+      clock.classList.remove('hidden');
       return req;
+    }
+    function cancelMatching() {
+      if (!matchInFlight || !activeMatchController) return;
+      matchStopReason = 'canceled';
+      activeMatchController.abort();
+    }
+    function matchProgress(stage, details = {}) {
+      if (!matchInFlight || !Object.hasOwn(OfferWorkflow.stages, stage)) return;
+      const message = OfferWorkflow.stages[stage];
+      document.getElementById('result-description').textContent = message;
+      setStatus(message);
+      if (details.candidate_count !== null && Number.isSafeInteger(details.candidate_count)) {
+        document.getElementById('result-counts').textContent =
+          `${details.candidate_count} retrieved candidates. Checks apply to this shortlist.`;
+      }
     }
     async function runMatching() {
       if (matchInFlight) return;
       matchInFlight = true;
       lockOffer(true);
       const btn = document.getElementById('btn-match');
+      const cancel = document.getElementById('btn-cancel-match');
+      let requestTimer;
+      matchStopReason = null;
       btn.disabled = true;
       btn.textContent = 'Running live retrieval and constraint checks…';
       document.getElementById('brief-container').classList.add('hidden');
@@ -1472,24 +1553,38 @@ def index_dashboard():
       document.getElementById('external-directions').removeAttribute('href');
       try {
         const reqBody = buildRequest();
-        const res = await fetch('/api/match', {
-          method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(reqBody)
+        activeMatchController = new AbortController();
+        cancel.classList.remove('hidden');
+        requestTimer = setTimeout(() => {
+          matchStopReason = 'timeout';
+          activeMatchController?.abort();
+        }, 175000);
+        const res = await fetch('/api/match/stream', {
+          method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(reqBody),
+          signal: activeMatchController.signal,
         });
-        const data = await res.json();
-        if (!res.ok) {
-          const detail = Array.isArray(data.detail) ? data.detail.map(item => item.msg).join('; ') : data.detail;
-          throw new Error(data.message || detail || `Request failed (${res.status}).`);
+        const data = await OfferWorkflow.readMatchStream(res, matchProgress, activeMatchController.signal);
+        // Cancellation may win the microtask race after the final record arrives.
+        if (activeMatchController.signal.aborted) {
+          const error = new Error('Check canceled.'); error.name = 'AbortError'; throw error;
         }
         currentPayload = data;
         renderResults(data);
         focusSection('review-panel');
       } catch (err) {
-        setStatus(err.message || 'The request could not complete. Please retry.', true);
-        document.getElementById('runtime-status').textContent = 'Failed';
-        reviewState('blocked','The live check did not finish',err.message || 'Check the offer and retry. A failed request is not a confirmed match.');
+        const canceled = matchStopReason === 'canceled';
+        const message = canceled ? 'Check canceled. No result was used. Retry keeps the same pickup deadline.'
+          : matchStopReason === 'timeout' ? 'The live check reached its time limit. Retry keeps the same pickup deadline.'
+          : err.message || 'The request could not complete. Please retry.';
+        setStatus(message, true);
+        document.getElementById('runtime-status').textContent = canceled ? 'Canceled' : 'Failed';
+        reviewState(canceled ? 'canceled' : 'blocked',canceled ? 'Check canceled' : 'The live check did not finish',message);
         setWorkflow('review');
         document.getElementById('decoys-list').replaceChildren(textNode('p', 'No current result. Previous results have been cleared.'));
       } finally {
+        clearTimeout(requestTimer);
+        activeMatchController = null;
+        cancel.classList.add('hidden');
         matchInFlight = false;
         lockOffer(false);
         btn.textContent = 'Find a viable match';
@@ -1664,7 +1759,10 @@ def index_dashboard():
       setStatus('Choose a scenario or enter an offer, then run a live match.');
       setWorkflow('offer');
     };
-    window.addEventListener?.('pagehide', () => stopVoiceSession('Session closed.'));
+    window.addEventListener?.('pagehide', () => {
+      cancelMatching();
+      stopVoiceSession('Session closed.');
+    });
   </script>
   <script src="/ui/recipient-explorer.js"></script>
 

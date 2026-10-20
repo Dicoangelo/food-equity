@@ -11,12 +11,16 @@ Every HTTP response includes `X-Request-ID`. The app accepts a canonical,
 or generates a new UUID. Invalid IDs are not echoed. A caller-supplied ID is
 for correlation only and establishes no identity or authorization.
 
-The app emits one JSON line to stdout per HTTP request, which Cloud Run collects
-in Cloud Logging. Fields are `event: http_request`, `severity`, `method`, `path`,
-`status`, `duration_ms`, `request_id`, `revision`, `commit_sha` and `service`.
+The app emits one JSON line to stdout when an HTTP request ends, which Cloud Run
+collects in Cloud Logging. Fields are `event: http_request`, `severity`, `method`,
+`path`, `status`, `duration_ms`, `request_id`, `revision`, `commit_sha` and `service`.
 `path` is the matched route template; unmatched URLs become `<unmatched>`.
-Duration covers application processing until response headers are available,
-not complete streamed-body transfer. Server errors use `ERROR` severity.
+Duration preserves the existing time-to-headers measurement, not the complete
+streamed-body transfer time. If no headers were reached, it covers time until
+the request ended. HTTP `status` remains the response status already sent (or
+`null` if none started); a stream can return HTTP 200 and later fail or disconnect.
+These fields do not establish successful matching or complete delivery to the
+client. Server errors use `ERROR` severity.
 
 These application events contain no query strings, request/response bodies,
 authorization headers, identities, audio, transcripts or exception text. The
@@ -25,9 +29,13 @@ URLs. WebSocket sessions are intentionally excluded from this HTTP middleware;
 no audio/transcription telemetry is added. Cloud Run's platform request logs
 have their own fields and policies; these controls apply to application logs.
 
-Unhandled HTTP exceptions produce a generic 500 with the same request ID in the
-header and JSON body. Expected API errors retain their existing response
-contracts. Health response bodies remain unchanged.
+Unhandled HTTP exceptions before a response starts produce a generic 500 with
+the same request ID in the header and JSON body. Once headers have been sent,
+the middleware preserves the streaming response and its cancellation instead of
+attempting a second response. A pure ASGI wrapper forwards receive/send events
+without consuming request bodies or replacing the response iterator. Expected
+API errors retain their existing contracts. Health response bodies remain
+unchanged.
 
 ## Investigate a failed request
 

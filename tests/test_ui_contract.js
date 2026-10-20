@@ -33,9 +33,14 @@ class Element {
 const nodes = new Map();
 const context = vm.createContext({
   document: {createElement: tag => new Element(tag), getElementById: id => {if(!nodes.has(id)) nodes.set(id,new Element('div')); return nodes.get(id);}},
-  window: {}, console, Date, Number, JSON, navigator: {},
+  window: {}, console, Date, Number, JSON, navigator: {}, TextDecoder, AbortController, setTimeout, clearTimeout,
 });
+vm.runInContext(fs.readFileSync(require('node:path').join(__dirname, '../agent/ui/offer-workflow.js'), 'utf8'), context);
 vm.runInContext(script, context);
+function matchResponse(data) {
+  const events = [{type:'progress',stage:'accepted'}, {type:'progress',stage:'checking_constraints',candidate_count:12}, {type:'result',data}];
+  return new Response(events.map((event,i)=>JSON.stringify({...event,run_id:'fixture-run',sequence:i+1})).join('\n')+'\n', {headers:{'content-type':'application/x-ndjson'}});
+}
 const attack='<img src=x onerror=alert(1)>';
 const pop=context.popup(attack,[attack]);
 assert.equal(pop.children[0].textContent,attack);
@@ -47,6 +52,16 @@ const req=context.buildRequest();
 assert.equal(req.donor_lat,47.5301);
 assert.equal(req.donor_lon,-122.3210);
 assert.equal(context.buildRequest().deadline_at,req.deadline_at,'Repeated runs must preserve pickup deadline');
+const originalDate=context.Date;
+const elapsedNow=Date.now()+30*60000;
+context.Date=class extends Date {static now(){return elapsedNow;}};
+nodes.get('input-donor').value='Updated donor name';
+nodes.get('input-text').value='Same milk, updated packaging information';
+nodes.get('input-pallets').value=4;
+context.offerChanged();
+assert.equal(context.buildRequest().deadline_at,req.deadline_at,'Typed non-clock edits after 30 minutes must not add 30 minutes to the deadline');
+context.Date=originalDate;
+
 nodes.get('input-pallets').value=-2;
 assert.throws(()=>context.buildRequest(),/positive pallet/);
 context.applyScenario(scenario);
@@ -184,12 +199,71 @@ async function testRescueWorkflow() {
   choices[2].onclick();
   assert.equal(matchCalls.length,1,'Rapid clicks must not overlap live model requests');
   assert.equal(nodes.get('input-pallets').value,1,'Locked preset actions must not change the in-flight offer');
-  resolveMatch({ok:true,json:async()=>({status:'blocked',message:'Toolbox unavailable'})});
+  resolveMatch(matchResponse({status:'blocked',message:'Toolbox unavailable'}));
   await first;
   assert.equal(nodes.get('input-pallets').disabled,false);
   assert(choices.every(button=>!button.disabled));
   assert.equal(nodes.get('review-panel').getAttribute('aria-busy'),'false');
   assert.equal(nodes.get('action-retry').classList.contains('hidden'),false);
+
+  assert.equal(matchCalls[0].url,'/api/match/stream');
+  assert.equal(nodes.get('btn-cancel-match').classList.contains('hidden'),true);
+  const fixedDeadline=context.buildRequest().deadline_at;
+  const encoder=new TextEncoder();
+  let progressController, readerCanceled=false, pendingSignal;
+  context.fetch=async(url,options)=>{
+    pendingSignal=options.signal;
+    return new Response(new ReadableStream({
+      start(controller){progressController=controller;},
+      cancel(){readerCanceled=true;},
+    }),{headers:{'content-type':'application/x-ndjson'}});
+  };
+  const pending=context.runMatching();
+  await new Promise(setImmediate);
+  progressController.enqueue(encoder.encode(JSON.stringify({type:'progress',stage:'checking_constraints',candidate_count:12,run_id:'cancel-fixture',sequence:1})+'\n'));
+  await new Promise(setImmediate);
+  assert.match(nodes.get('result-description').textContent,/Checking storage/,'Real progress is shown before a terminal result');
+  assert.match(nodes.get('result-counts').textContent,/12 retrieved candidates.*shortlist/);
+  assert.equal(nodes.get('btn-cancel-match').classList.contains('hidden'),false);
+  context.cancelMatching();
+  await pending;
+  assert.equal(pendingSignal.aborted,true);
+  assert.equal(readerCanceled,true,'Cancel closes the active response reader');
+  assert.equal(nodes.get('review-panel').getAttribute('data-state'),'canceled');
+  assert.equal(nodes.get('input-pallets').disabled,false);
+  assert.equal(nodes.get('btn-cancel-match').classList.contains('hidden'),true);
+  assert.equal(nodes.get('action-retry').classList.contains('hidden'),false);
+  assert.equal(context.buildRequest().deadline_at,fixedDeadline);
+  context.fetch=async()=>matchResponse({status:'no_match'});
+  await context.runMatching();
+  assert.equal(context.buildRequest().deadline_at,fixedDeadline,'Retry preserves the canceled offer clock');
+
+  const readStream=context.OfferWorkflow.readMatchStream;
+  context.OfferWorkflow.readMatchStream=async(...args)=>{
+    const result=await readStream(...args);
+    context.cancelMatching();
+    return result;
+  };
+  await context.runMatching();
+  assert.equal(nodes.get('review-panel').getAttribute('data-state'),'canceled','Cancel winning the final-record race must discard the result');
+  assert.equal(nodes.get('step-handoff').disabled,true);
+  context.OfferWorkflow.readMatchStream=readStream;
+
+  const realSetTimeout=context.setTimeout, realClearTimeout=context.clearTimeout;
+  let expireRequest, requestLimit, cleared=false;
+  context.setTimeout=(fn,ms)=>{expireRequest=fn;requestLimit=ms;return 17;};
+  context.clearTimeout=id=>{cleared=id===17;};
+  context.fetch=async()=>new Response(new ReadableStream(),{headers:{'content-type':'application/x-ndjson'}});
+  const timed=context.runMatching();
+  await new Promise(setImmediate);
+  assert.equal(requestLimit,175000);
+  expireRequest();
+  await timed;
+  assert.match(nodes.get('result-description').textContent,/time limit.*same pickup deadline/);
+  assert.equal(nodes.get('input-pallets').disabled,false);
+  assert.equal(cleared,true);
+  assert.equal(context.buildRequest().deadline_at,fixedDeadline);
+  context.setTimeout=realSetTimeout;context.clearTimeout=realClearTimeout;
 
   const payload={status:'draft',generation_mode:'deterministic_fallback',
     winner:{name:'Food Bank',city:'Seattle',profile_source:'generated'},
@@ -326,7 +400,7 @@ async function testVoiceIntake() {
   lateMessage({data:JSON.stringify({...draft,draft_version:4,fields:{...fields,posting_text:'late stale update'}})});
   assert.equal(nodes.get('input-text').value,'Reviewed bread offer with updated packaging','Closed-session events cannot change the form');
   const posted=[];
-  context.fetch=async(url,options)=>{posted.push({url,body:JSON.parse(options.body)});return {ok:true,json:async()=>({status:'no_match'})};};
+  context.fetch=async(url,options)=>{posted.push({url,body:JSON.parse(options.body)});return matchResponse({status:'no_match'});};
   await context.runMatching();
   assert.equal(posted.length,1);
   assert.equal(posted[0].body.deadline_at,fields.deadline_at,'Only the explicit match action posts the reviewed fixed deadline');

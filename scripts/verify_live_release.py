@@ -6,6 +6,7 @@ No credentials are written, no auth setup is attempted, and HTTP is not retried.
 The full run makes two real broker requests and consumes model/query quota.
 """
 import argparse
+import asyncio
 from collections import Counter
 from datetime import datetime, timedelta, timezone
 import hashlib
@@ -19,6 +20,8 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
+import httpx
+
 PROJECT = "qwiklabs-gcp-04-b992b9561e32"
 REGION = "us-east1"
 SERVICE = "seattle-food-broker"
@@ -26,6 +29,14 @@ CI_DEPLOYER = f"food-equity-deploy@{PROJECT}.iam.gserviceaccount.com"
 FOODKEEPER_SHA256 = "e84caab9d4b603209e31d21d5027c41d29adfecbca7051ff7322e9fb0226c01d"
 BAKERY_TEXT = "roughly 200 loaves of day-old bread and pastries from three store locations"
 MAX_RESPONSE_BYTES = 2 * 1024 * 1024
+MAX_STREAM_EVENTS = 256
+STREAM_PATH = "/api/match/stream"
+WORKFLOW_PATH = "/ui/offer-workflow.js"
+WORKFLOW_SOURCE = Path(__file__).resolve().parents[1] / "agent/ui/offer-workflow.js"
+PROGRESS_STAGES = (
+    "accepted", "connecting", "retrieving", "checking_constraints", "preparing_brief", "finalizing",
+)
+COUNT_FIELDS = {"candidate_count", "retrieved_count", "eligible_count", "rejected_count", "pending_count"}
 
 
 class VerificationError(Exception):
@@ -134,8 +145,10 @@ class LiveClient:
         self.opener = build_opener(NoRedirect())
 
     def request(self, method, path, payload=None):
-        require(path.startswith("/api/") and not path.startswith("//"), "invalid_endpoint")
-        headers = {"Content-Type": "application/json", "Accept": "application/json"}
+        require(path.startswith("/api/") or path == WORKFLOW_PATH, "invalid_endpoint")
+        asset = path == WORKFLOW_PATH
+        headers = {"Content-Type": "application/json",
+                   "Accept": "text/javascript" if asset else "application/json"}
         if self._token:
             headers["Authorization"] = "Bearer " + self._token
         request = Request(self.url + path, method=method,
@@ -145,6 +158,9 @@ class LiveClient:
         try:
             with self.opener.open(request, timeout=self.timeout) as response:
                 status = response.status
+                if asset and status == 200:
+                    content_type = response.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
+                    require(content_type in {"text/javascript", "application/javascript"}, "workflow_content_type")
                 raw = response.read(MAX_RESPONSE_BYTES + 1)
         except HTTPError as exc:
             # Do not persist error bodies, Location headers, or provider messages.
@@ -157,12 +173,125 @@ class LiveClient:
         if status != 200:
             return receipt, None
         require(len(raw) <= MAX_RESPONSE_BYTES, "response_too_large")
+        if asset:
+            return receipt, raw
         try:
             body = json.loads(raw)
         except (ValueError, UnicodeDecodeError):
             raise VerificationError("invalid_response_json") from None
         require(isinstance(body, dict), "response_not_object")
         return receipt, body
+
+    def request_stream(self, payload):
+        """Read NDJSON incrementally with a total deadline, including final EOF.
+
+        HTTPX is already used by the installed Google SDKs. Its async transport
+        lets the total deadline cancel an in-flight read, not just check the
+        clock between chunks. No extra broker request or retry is made.
+        """
+        return asyncio.run(self._request_stream(payload))
+
+    async def _request_stream(self, payload):
+        headers = {"Content-Type": "application/json", "Accept": "application/x-ndjson"}
+        if self._token:
+            headers["Authorization"] = "Bearer " + self._token
+        started = time.monotonic()
+        digest = hashlib.sha256()
+        size = events = 0
+        pending = b""
+        run_id = None
+        stages = []
+        result = None
+        first_event_ms = None
+
+        def read_event(raw):
+            nonlocal events, run_id, result, first_event_ms
+            require(events < MAX_STREAM_EVENTS, "stream_too_many_events")
+            try:
+                event = json.loads(raw)
+                json.dumps(event, allow_nan=False)
+            except (ValueError, UnicodeDecodeError):
+                raise VerificationError("stream_invalid_json") from None
+            require(isinstance(event, dict), "stream_event_not_object")
+            require(result is None, "stream_after_terminal")
+            observed_id = event.get("run_id")
+            require(isinstance(observed_id, str) and bool(re.fullmatch(r"[A-Za-z0-9_-]{1,80}", observed_id)),
+                    "stream_invalid_run_id")
+            if run_id is None:
+                run_id = observed_id
+            require(observed_id == run_id, "stream_run_id_changed")
+            require(type(event.get("sequence")) is int and event["sequence"] == events + 1,
+                    "stream_sequence")
+            kind = event.get("type")
+            if events == 0:
+                require(kind == "progress" and event.get("stage") == "accepted", "stream_accepted_first")
+                first_event_ms = round((time.monotonic() - started) * 1000)
+            events += 1
+            common = {"type", "run_id", "sequence"}
+            if kind == "progress":
+                stage = event.get("stage")
+                require(stage in PROGRESS_STAGES and set(event) <= common | {"stage"} | COUNT_FIELDS,
+                        "stream_progress_contract")
+                require(not stages or PROGRESS_STAGES.index(stage) > PROGRESS_STAGES.index(stages[-1]),
+                        "stream_stage_order")
+                require(all(type(event[key]) is int and 0 <= event[key] <= 1_000_000
+                            for key in COUNT_FIELDS & set(event)), "stream_progress_counts")
+                stages.append(stage)
+            elif kind == "heartbeat":
+                require(set(event) == common, "stream_heartbeat_contract")
+            elif kind == "result":
+                require(set(event) == common | {"data"} and isinstance(event.get("data"), dict),
+                        "stream_result_contract")
+                result = event["data"]
+            elif kind == "error":
+                raise VerificationError("stream_terminal_error")
+            else:
+                raise VerificationError("stream_event_type")
+
+        try:
+            async with asyncio.timeout(min(self.timeout, 210)):
+                async with httpx.AsyncClient(timeout=min(self.timeout, 30), follow_redirects=False) as client:
+                    async with client.stream("POST", self.url + STREAM_PATH, json=payload,
+                                             headers=headers) as response:
+                        status = response.status_code
+                        if status != 200:
+                            return {"http_status": status, "latency_ms": round(
+                                (time.monotonic() - started) * 1000)}, None
+                        content_type = response.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
+                        require(content_type == "application/x-ndjson", "stream_content_type")
+                        async for chunk in response.aiter_bytes():
+                            size += len(chunk)
+                            require(size <= MAX_RESPONSE_BYTES, "response_too_large")
+                            digest.update(chunk)
+                            pending += chunk
+                            while b"\n" in pending:
+                                raw, pending = pending.split(b"\n", 1)
+                                read_event(raw)
+                        require(not pending, "stream_incomplete_line")
+                        require(result is not None, "stream_missing_result")
+                        require(all(stage in stages for stage in (
+                            "accepted", "connecting", "retrieving", "checking_constraints", "finalizing",
+                        )), "stream_missing_progress")
+        except (TimeoutError, httpx.TimeoutException):
+            raise VerificationError("stream_timeout") from None
+        except httpx.HTTPError:
+            raise VerificationError("http_unavailable_or_timeout") from None
+        return {
+            "http_status": status, "latency_ms": round((time.monotonic() - started) * 1000),
+            "response_bytes": size, "response_sha256": digest.hexdigest(),
+            "stream_events": events, "progress_stages": stages,
+            "first_event_latency_ms": first_event_ms, "terminal_result_received": True,
+        }, result
+
+
+def check_workflow_asset(body):
+    require(isinstance(body, bytes), "workflow_asset_missing")
+    try:
+        expected = WORKFLOW_SOURCE.read_bytes()
+    except OSError:
+        raise VerificationError("workflow_source_unavailable") from None
+    require(bool(expected) and len(expected) <= MAX_RESPONSE_BYTES and body == expected, "workflow_asset_mismatch")
+    return {"source_sha256": hashlib.sha256(expected).hexdigest(), "bytes": len(expected)}
 
 
 def check_health(body):
@@ -325,7 +454,10 @@ def run_checks(client, *, skip_agent=False, expected_commit=None, expected_revis
         checks.append(record)
         started = time.monotonic()
         try:
-            receipt, body = client.request("GET" if payload is None else "POST", path, payload)
+            if path == STREAM_PATH:
+                receipt, body = client.request_stream(payload)
+            else:
+                receipt, body = client.request("GET" if payload is None else "POST", path, payload)
             record.update(receipt)
             require(receipt["http_status"] == 200, "unexpected_http_status")
             if isinstance(body, dict):
@@ -363,12 +495,15 @@ def run_checks(client, *, skip_agent=False, expected_commit=None, expected_revis
             return checks
     if not execute("health", "/api/health", check_health):
         return checks
+    if not execute("offer_workflow_asset", WORKFLOW_PATH, check_workflow_asset):
+        return checks
     execute("city", "/api/city", check_city)
     execute("foodkeeper", "/api/foodkeeper?query=bread", check_foodkeeper)
     if not skip_agent:
         for stress in (False, True):
             offer = make_offer(stress)
-            execute("cold_capacity_stress" if stress else "bakery_source_3", "/api/match",
+            execute("cold_capacity_stress" if stress else "bakery_source_3",
+                    "/api/match" if stress else STREAM_PATH,
                     lambda body: check_broker(body, offer, stress), offer)
     return checks
 
@@ -396,6 +531,8 @@ def main(argv=None):
                   "The 10000-pallet cold offer is a synthetic rejection stress case, not a real donation.",
                   "No-match can pass runtime verification; proposals never mean recipient acceptance or delivery.",
                   "FoodKeeper guidance never extends the donor deadline. No outreach is sent.",
+                  "Bakery verifies streaming; capacity stress verifies JSON. Only two broker requests are made.",
+                  "Live cancellation is not probed; disconnect cleanup is covered by offline ASGI tests.",
               ]}
     token = None
     try:
@@ -405,7 +542,7 @@ def main(argv=None):
         report["checks"] = run_checks(LiveClient(report["target"]["url"], token), skip_agent=args.skip_agent,
                                      expected_commit=args.expected_commit,
                                      expected_revision=report["target"]["revision"])
-        expected_checks = (3 if args.skip_agent else 5) + int(args.expected_commit is not None)
+        expected_checks = (4 if args.skip_agent else 6) + int(args.expected_commit is not None)
         passed = len(report["checks"]) == expected_checks and all(c["passed"] for c in report["checks"])
         report["status"] = "passed" if passed else "failed"
         report["runtime_passed"] = passed and not args.skip_agent

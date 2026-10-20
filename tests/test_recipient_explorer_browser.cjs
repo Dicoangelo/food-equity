@@ -31,16 +31,16 @@ const server = http.createServer((req,res) => {
   requests.push(req.url);
   const json = value => {res.setHeader('content-type','application/json');res.end(JSON.stringify(value));};
   if(req.url === '/') {res.setHeader('content-type','text/html');return res.end(html);}
-  if(req.url.startsWith('/ui/recipient-explorer.')) {
+  if(req.url.startsWith('/ui/')) {
     const name=req.url.slice('/ui/'.length);
-    if(!['recipient-explorer.js','recipient-explorer.css'].includes(name)) {res.writeHead(404);return res.end();}
+    if(!['recipient-explorer.js','recipient-explorer.css','offer-workflow.js'].includes(name)) {res.writeHead(404);return res.end();}
     res.setHeader('content-type',name.endsWith('.js')?'text/javascript':'text/css');
     return res.end(fs.readFileSync(path.join(root,'agent/ui',name)));
   }
   if(req.url === '/api/scenarios') return json(scenarios);
   if(req.url === '/api/city') return json(city);
   if(req.url === '/api/live/config') return json({enabled:false});
-  if(req.url === '/api/match') {
+  if(req.url === '/api/match/stream') {
     matchCalls++;
     let raw='';
     req.on('data',chunk=>raw+=chunk);
@@ -51,11 +51,14 @@ const server = http.createServer((req,res) => {
       const backup={...evaluated(cityRows[1],'eligible'),...timing};
       const pending={...evaluated(cityRows[2],'needs_confirmation'),...timing,
         composite_score:.99,reason_codes:['acceptance_confirmation_required'],elimination_reasons:['Receiving-site storage is unknown.']};
-      json({status:'draft',generation_mode:'deterministic_fallback',...timing,winner,runners_up:[backup],
+      const payload={status:'draft',generation_mode:'deterministic_fallback',...timing,winner,runners_up:[backup],
         pending_confirmation:[pending],eliminated_decoys:[],
         donor:{name:offer.donor_name,latitude:offer.donor_lat,longitude:offer.donor_lon,
           pallet_count:offer.pallet_count,required_storage:offer.required_storage,deadline_at:offer.deadline_at},
-        match_brief:{drafted_sms_outreach:'Please confirm acceptance.',drafted_email_outreach:'Please review capacity.'}});
+        match_brief:{drafted_sms_outreach:'Please confirm acceptance.',drafted_email_outreach:'Please review capacity.'}};
+      res.setHeader('content-type','application/x-ndjson');
+      res.end([{type:'progress',stage:'accepted'},{type:'progress',stage:'checking_constraints',candidate_count:3},{type:'result',data:payload}]
+        .map((event,i)=>JSON.stringify({...event,run_id:'fixture-'+matchCalls,sequence:i+1})).join('\n')+'\n');
     });
   }
   res.writeHead(404);res.end();

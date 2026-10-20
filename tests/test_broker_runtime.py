@@ -1,4 +1,5 @@
 """Actual ADK Runner tests with a fake model/MCP boundary; never call cloud."""
+import asyncio
 import json
 import sys
 from pathlib import Path
@@ -19,7 +20,7 @@ BRIEF = {
 CANDIDATE = {
     "recipient_id": 1, "name": "Fixture Food Bank", "cold_storage": "commercial",
     "max_pallets": 2, "pickup_window_hours": 1, "distance": 0.2,
-    "service_days": "Monday Tuesday Wednesday Thursday Friday Saturday Sunday",
+    "service_days": "daily",
     "profile_source": "planted", "latitude": 47.6, "longitude": -122.3,
 }
 
@@ -73,11 +74,13 @@ class FakeToolset:
         self.closed = True
 
 
-async def execute(model=None, tool=None):
+async def execute(model=None, tool=None, **kwargs):
     tool = tool or FakeVectorTool()
     toolset = FakeToolset(tool)
     broker = FoodBrokerAgent(model=model or ScriptedModel(), toolset_factory=lambda: toolset)
-    result = await broker.broker_posting_async("A pallet of chilled spinach", hours_remaining=6)
+    result = await broker.broker_posting_async(
+        "A pallet of chilled spinach", hours_remaining=6, **kwargs
+    )
     return result, tool, toolset
 
 
@@ -96,6 +99,239 @@ async def test_real_adk_function_call_invokes_mcp_boundary_and_gates():
     assert "adk_function_call" in stages
     assert "adk_function_result" in stages
     assert stages.index("mcp_call") < stages.index("deterministic_constraints")
+
+
+@pytest.mark.asyncio
+async def test_progress_reports_actual_boundaries_without_offer_or_recipient_data():
+    tool = FakeVectorTool()
+    toolset = FakeToolset(tool)
+    agent = FoodBrokerAgent(model=ScriptedModel(), toolset_factory=lambda: toolset)
+    events = []
+
+    async def progress(stage, details):
+        if stage in {"connecting", "retrieving"}:
+            assert not tool.calls
+        if stage in {"checking_constraints", "preparing_brief", "finalizing"}:
+            assert len(tool.calls) == 1
+        if stage == "finalizing":
+            assert toolset.closed
+        events.append((stage, details))
+
+    result = await agent.broker_posting_async(
+        "A pallet of chilled spinach", progress_callback=progress
+    )
+    assert result["status"] == "success"
+    assert events == [
+        ("connecting", {}),
+        ("retrieving", {}),
+        ("checking_constraints", {"candidate_count": 1}),
+        ("preparing_brief", {}),
+        ("finalizing", {}),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_no_match_progress_never_claims_a_brief_is_being_prepared():
+    events = []
+
+    async def progress(stage, details):
+        events.append((stage, details))
+
+    result, _, _ = await execute(
+        tool=FakeVectorTool(payload="[]"), progress_callback=progress
+    )
+    assert result["status"] == "no_viable_match"
+    assert events == [
+        ("connecting", {}),
+        ("retrieving", {}),
+        ("checking_constraints", {"candidate_count": 0}),
+        ("finalizing", {}),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_observer_failures_do_not_corrupt_match_or_leak_exception_text(caplog):
+    async def progress(stage, details):
+        raise RuntimeError("private observer payload")
+
+    result, _, toolset = await execute(progress_callback=progress)
+    assert result["status"] == "success"
+    assert toolset.closed
+    assert "private observer payload" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_stalled_observer_is_bounded_and_cancelled(monkeypatch):
+    from agent import broker as broker_module
+    monkeypatch.setattr(broker_module, "BROKER_PROGRESS_TIMEOUT_SECONDS", 0.01)
+    cancelled = []
+
+    async def progress(stage, details):
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cancelled.append(stage)
+
+    result, _, toolset = await asyncio.wait_for(
+        execute(progress_callback=progress), timeout=1
+    )
+    await asyncio.sleep(0)
+    assert result["status"] == "success"
+    assert toolset.closed
+    assert cancelled == [
+        "connecting", "retrieving", "checking_constraints", "preparing_brief", "finalizing"
+    ]
+
+
+@pytest.mark.asyncio
+async def test_operation_budget_includes_tool_discovery(monkeypatch):
+    from agent import broker as broker_module
+    monkeypatch.setattr(broker_module, "BROKER_OPERATION_TIMEOUT_SECONDS", 0.02)
+
+    class StalledDiscovery(FakeToolset):
+        async def get_tools(self):
+            await asyncio.Event().wait()
+
+    toolset = StalledDiscovery(FakeVectorTool())
+    agent = FoodBrokerAgent(model=ScriptedModel(), toolset_factory=lambda: toolset)
+    result = await asyncio.wait_for(
+        agent.broker_posting_async("Chilled spinach"), timeout=0.5
+    )
+    assert result["status"] == "blocked"
+    assert result["error_code"] == "TimeoutError"
+    assert not toolset.tool.calls
+    assert toolset.closed
+
+
+@pytest.mark.asyncio
+async def test_stalled_synthesis_returns_clock_checked_draft_within_budget(monkeypatch):
+    from agent import broker as broker_module
+    monkeypatch.setattr(broker_module, "BROKER_OPERATION_TIMEOUT_SECONDS", 0.1)
+
+    class StalledSynthesis(ScriptedModel):
+        async def generate_content_async(self, llm_request, stream=False):
+            if self.calls:
+                await asyncio.Event().wait()
+            async for response in super().generate_content_async(llm_request, stream):
+                yield response
+
+    result, tool, toolset = await asyncio.wait_for(
+        execute(model=StalledSynthesis()), timeout=1
+    )
+    assert len(tool.calls) == 1
+    assert result["status"] == "draft"
+    assert result["outreach_mode"] == "template_fallback"
+    assert any(e["stage"] == "dispatch_clock_recheck" for e in result["execution_trace"])
+    assert toolset.closed
+
+
+@pytest.mark.asyncio
+async def test_stalled_toolset_cleanup_cannot_hold_completed_result(monkeypatch):
+    from agent import broker as broker_module
+    monkeypatch.setattr(broker_module, "BROKER_CLEANUP_TIMEOUT_SECONDS", 0.01)
+
+    class StalledCleanup(FakeToolset):
+        async def close(self):
+            try:
+                await asyncio.Event().wait()
+            finally:
+                self.closed = True
+
+    toolset = StalledCleanup(FakeVectorTool())
+    agent = FoodBrokerAgent(model=ScriptedModel(), toolset_factory=lambda: toolset)
+    result = await asyncio.wait_for(
+        agent.broker_posting_async("Chilled spinach"), timeout=1
+    )
+    await asyncio.sleep(0)
+    assert result["status"] == "success"
+    assert toolset.closed
+
+
+@pytest.mark.asyncio
+async def test_cleanup_that_defers_cancellation_cannot_hold_completed_result(monkeypatch):
+    from agent import broker as broker_module
+    monkeypatch.setattr(broker_module, "BROKER_CLEANUP_TIMEOUT_SECONDS", 0.01)
+    release = asyncio.Event()
+    cancellation_received = asyncio.Event()
+    closed = asyncio.Event()
+
+    class DeferredCleanup(FakeToolset):
+        async def close(self):
+            try:
+                await release.wait()
+            except asyncio.CancelledError:
+                cancellation_received.set()
+                await release.wait()
+            finally:
+                closed.set()
+
+    toolset = DeferredCleanup(FakeVectorTool())
+    agent = FoodBrokerAgent(model=ScriptedModel(), toolset_factory=lambda: toolset)
+    try:
+        result = await asyncio.wait_for(
+            agent.broker_posting_async("Chilled spinach"), timeout=1
+        )
+        await asyncio.wait_for(cancellation_received.wait(), timeout=0.5)
+        assert result["status"] == "success"
+        assert not closed.is_set()
+    finally:
+        release.set()
+        await asyncio.wait_for(closed.wait(), timeout=0.5)
+
+
+@pytest.mark.asyncio
+async def test_caller_cancellation_stops_retrieval_and_cleans_up_without_result():
+    started = asyncio.Event()
+    cancelled = asyncio.Event()
+    events = []
+
+    class StalledRetrieval(FakeVectorTool):
+        async def run_async(self, args, tool_context):
+            started.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cancelled.set()
+
+    async def progress(stage, details):
+        events.append(stage)
+
+    toolset = FakeToolset(StalledRetrieval())
+    agent = FoodBrokerAgent(model=ScriptedModel(), toolset_factory=lambda: toolset)
+    task = asyncio.create_task(agent.broker_posting_async(
+        "Chilled spinach", progress_callback=progress
+    ))
+    await asyncio.wait_for(started.wait(), timeout=1)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(task, timeout=1)
+    assert cancelled.is_set()
+    assert toolset.closed
+    assert events == ["connecting", "retrieving"]
+
+
+@pytest.mark.asyncio
+async def test_cancellation_during_cleanup_propagates_and_cancels_cleanup():
+    started = asyncio.Event()
+    cancelled = asyncio.Event()
+
+    class StalledCleanup(FakeToolset):
+        async def close(self):
+            started.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cancelled.set()
+
+    toolset = StalledCleanup(FakeVectorTool())
+    agent = FoodBrokerAgent(model=ScriptedModel(), toolset_factory=lambda: toolset)
+    task = asyncio.create_task(agent.broker_posting_async("Chilled spinach"))
+    await asyncio.wait_for(started.wait(), timeout=1)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(task, timeout=1)
+    await asyncio.sleep(0)
+    assert cancelled.is_set()
 
 
 @pytest.mark.asyncio
