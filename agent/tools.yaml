@@ -1,95 +1,39 @@
-sources:
-  seattle_food_db:
-    kind: bigquery
-    project: qwiklabs-gcp-04-b992b9561e32
-
-tools:
-  vector_search_recipients:
-    kind: bigquery-sql
-    source: seattle_food_db
-    description: |
-      Runs semantic vector search against Seattle recipient profiles using BigQuery VECTOR_SEARCH and AI.EMBED (gemini-embedding-2). Returns nearest candidate organizations with their storage capabilities, pallet capacity, and pickup window.
-    statement: |
-      SELECT 
-        base.recipient_id,
-        base.name,
-        base.street,
-        base.city,
-        base.zip_code,
-        base.archetype,
-        base.cold_storage,
-        base.frozen_storage,
-        base.loading_dock,
-        base.refrigerated_transport,
-        base.max_pallets,
-        base.pickup_window_hours,
-        base.service_days,
-        base.profile_text,
-        base.latitude,
-        base.longitude,
-        base.tract_id,
-        base.tract_poverty_rate,
-        base.tract_no_vehicle_rate,
-        base.tract_dist_km,
-        distance
-      FROM VECTOR_SEARCH(
-        TABLE `qwiklabs-gcp-04-b992b9561e32.a4i_food.recipient_embeddings`, 'embedding',
-        (SELECT AI.EMBED(@query_text, endpoint => 'gemini-embedding-2').result AS embedding),
-        top_k => @top_k,
-        options => '{"use_brute_force":true}'
-      )
-    parameters:
-      - name: query_text
-        type: string
-        description: Free text description of surplus food (e.g. '10 crates of spinach, harvested yesterday, needs cold storage')
-      - name: top_k
-        type: integer
-        description: Number of nearest semantic candidates to retrieve
-
-  get_tract_equity_data:
-    kind: bigquery-sql
-    source: seattle_food_db
-    description: |
-      Retrieves census tract socioeconomic demographics (poverty rate, households with no vehicle, assistance rate) to evaluate food equity impact.
-    statement: |
-      SELECT
-        geo_id,
-        tract_lat,
-        tract_lon,
-        total_pop,
-        median_income,
-        poverty_rate,
-        no_vehicle_rate,
-        assistance_rate
-      FROM `qwiklabs-gcp-04-b992b9561e32.a4i_food.tract_demographics`
-      ORDER BY poverty_rate DESC
-
-  get_food_shelf_life:
-    kind: bigquery-sql
-    source: seattle_food_db
-    description: |
-      Looks up USDA FoodKeeper storage rules and shelf life in hours for a food item.
-    statement: |
-      SELECT
-        product_name,
-        product_subtitle,
-        category,
-        refrigerated_hours,
-        refrigerated_note,
-        pantry_hours,
-        pantry_note
-      FROM `qwiklabs-gcp-04-b992b9561e32.a4i_food.shelf_life`
-      WHERE LOWER(product_name) LIKE CONCAT('%', LOWER(@product_name), '%')
-         OR LOWER(keywords) LIKE CONCAT('%', LOWER(@product_name), '%')
-      LIMIT 5
-    parameters:
-      - name: product_name
-        type: string
-        description: Name or keyword of the food product (e.g. 'spinach', 'milk')
-
-toolsets:
-  food_broker_toolset:
-    tools:
-      - vector_search_recipients
-      - get_tract_equity_data
-      - get_food_shelf_life
+# MCP Toolbox v1.14 configuration. No secrets; ADC supplies BigQuery identity.
+kind: source
+name: seattle_food_db
+type: bigquery
+project: ${GOOGLE_CLOUD_PROJECT}
+location: US
+readOnly: true
+writeMode: blocked
+allowedDatasets:
+  - a4i_food
+maxQueryResultRows: 20
+maximumBytesBilled: 100000000
+sqlCommenter: true
+---
+kind: tool
+name: vector_search_recipients
+type: bigquery-sql
+source: seattle_food_db
+description: >-
+  Retrieve at most 12 Seattle recipient candidates by real BigQuery VECTOR_SEARCH.
+  Results are candidates, not confirmed matches. Operational fields are dataset
+  profiles and must pass the custom clock/storage/capacity tool before use.
+annotations:
+  readOnlyHint: true
+  destructiveHint: false
+statement: |
+  SELECT base.* EXCEPT(embedding), distance
+  FROM VECTOR_SEARCH(
+    TABLE `${GOOGLE_CLOUD_PROJECT}.a4i_food.recipient_embeddings`, 'embedding',
+    (SELECT AI.EMBED(@query_text, endpoint => 'gemini-embedding-2').result AS embedding),
+    top_k => 12,
+    distance_type => 'COSINE',
+    options => '{"use_brute_force":true}'
+  )
+  ORDER BY distance ASC
+parameters:
+  - name: query_text
+    type: string
+    description: Validated donor offer and required storage, no SQL.

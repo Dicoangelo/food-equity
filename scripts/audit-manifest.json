@@ -1,0 +1,107 @@
+{
+  "version": 1,
+  "purpose": "Hypothetical capacity scenarios, not verified quantity conversions.",
+  "deadline_policy": "Use each existing source hours_remaining unchanged from the fixed evaluation timestamp.",
+  "cases": [
+    {
+      "posting_id": 1,
+      "expected_track": "RETAIL",
+      "expected_storage_state": "refrigerated",
+      "expected_hours_available": 6,
+      "required_storage": "cold",
+      "pallet_count": 1,
+      "quantity_basis": "Hypothetical 1-pallet capacity scenario. NOT a conversion of the posting's crates, gallons, loaves, tons, truckload, bins or cases.",
+      "deadline_basis": "Existing surplus_postings.hours_remaining; no freshness inferred."
+    },
+    {
+      "posting_id": 2,
+      "expected_track": "RETAIL",
+      "expected_storage_state": "refrigerated",
+      "expected_hours_available": 8,
+      "required_storage": "cold",
+      "pallet_count": 1,
+      "quantity_basis": "Hypothetical 1-pallet capacity scenario. NOT a conversion of the posting's crates, gallons, loaves, tons, truckload, bins or cases.",
+      "deadline_basis": "Existing surplus_postings.hours_remaining; no freshness inferred."
+    },
+    {
+      "posting_id": 3,
+      "expected_track": "RETAIL",
+      "expected_storage_state": "pantry",
+      "expected_hours_available": 24,
+      "required_storage": "ambient",
+      "pallet_count": 1,
+      "quantity_basis": "Hypothetical 1-pallet capacity scenario. NOT a conversion of the posting's crates, gallons, loaves, tons, truckload, bins or cases.",
+      "deadline_basis": "Existing surplus_postings.hours_remaining; no freshness inferred."
+    },
+    {
+      "posting_id": 4,
+      "expected_track": "RETAIL",
+      "expected_storage_state": "refrigerated",
+      "expected_hours_available": 4,
+      "required_storage": "cold",
+      "pallet_count": 0.5,
+      "quantity_basis": "Hypothetical 0.5-pallet capacity scenario. NOT a conversion of the posting's crates, gallons, loaves, tons, truckload, bins or cases.",
+      "deadline_basis": "Existing surplus_postings.hours_remaining; no freshness inferred."
+    },
+    {
+      "posting_id": 5,
+      "expected_track": "FARM",
+      "expected_storage_state": "pantry",
+      "expected_hours_available": 72,
+      "required_storage": "ambient",
+      "pallet_count": 10,
+      "quantity_basis": "Hypothetical 10-pallet capacity scenario. NOT a conversion of the posting's crates, gallons, loaves, tons, truckload, bins or cases.",
+      "deadline_basis": "Existing surplus_postings.hours_remaining; no freshness inferred."
+    },
+    {
+      "posting_id": 6,
+      "expected_track": "FARM",
+      "expected_storage_state": "refrigerated",
+      "expected_hours_available": 12,
+      "required_storage": "cold",
+      "pallet_count": 8,
+      "quantity_basis": "Hypothetical 8-pallet capacity scenario. NOT a conversion of the posting's crates, gallons, loaves, tons, truckload, bins or cases.",
+      "deadline_basis": "Existing surplus_postings.hours_remaining; no freshness inferred."
+    },
+    {
+      "posting_id": 7,
+      "expected_track": "FARM",
+      "expected_storage_state": "pantry",
+      "expected_hours_available": 120,
+      "required_storage": "ambient",
+      "pallet_count": 6,
+      "quantity_basis": "Hypothetical 6-pallet capacity scenario. NOT a conversion of the posting's crates, gallons, loaves, tons, truckload, bins or cases.",
+      "deadline_basis": "Existing surplus_postings.hours_remaining; no freshness inferred."
+    },
+    {
+      "posting_id": 8,
+      "expected_track": "ESSENTIALS",
+      "expected_storage_state": "pantry",
+      "expected_hours_available": 168,
+      "required_storage": "ambient",
+      "pallet_count": 1,
+      "quantity_basis": "Hypothetical 1-pallet capacity scenario. NOT a conversion of the posting's crates, gallons, loaves, tons, truckload, bins or cases.",
+      "deadline_basis": "Existing surplus_postings.hours_remaining; no freshness inferred."
+    },
+    {
+      "posting_id": 9,
+      "expected_track": "ESSENTIALS",
+      "expected_storage_state": "pantry",
+      "expected_hours_available": 720,
+      "required_storage": "ambient",
+      "pallet_count": 1,
+      "quantity_basis": "Hypothetical 1-pallet capacity scenario. NOT a conversion of the posting's crates, gallons, loaves, tons, truckload, bins or cases.",
+      "deadline_basis": "Existing surplus_postings.hours_remaining; no freshness inferred."
+    },
+    {
+      "posting_id": 10,
+      "expected_track": "ESSENTIALS",
+      "expected_storage_state": "refrigerated",
+      "expected_hours_available": 8,
+      "required_storage": "cold",
+      "pallet_count": 0.5,
+      "quantity_basis": "Hypothetical 0.5-pallet capacity scenario. NOT a conversion of the posting's crates, gallons, loaves, tons, truckload, bins or cases.",
+      "deadline_basis": "Existing surplus_postings.hours_remaining; no freshness inferred."
+    }
+  ]
+}
