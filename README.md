@@ -2,6 +2,25 @@
 
 **Agents for Impact 2026**
 
+## Seattle team build
+
+**Track:** retail and grocer rescue. **Team:** five people; individual lane owners still to be confirmed.
+
+Our implementation stays in the starter layout: `agent/` contains the API, ADK broker,
+matching rules, UI and Toolbox configuration; `scripts/` contains run/deploy helpers;
+`tests/` contains offline verification. The original data and teaching notebooks remain
+below and are unchanged.
+
+Start with [agent run/deploy instructions](agent/README.md) and the
+[control board](HACKATHON-BOARD.md). The original challenge specification follows.
+Do not run `scripts/load.sh` against the shared dataset as an application setup step:
+it replaces the starter tables. Inspect the existing Seattle dataset first.
+
+The work is based on PR #1 (`c741544`), isolated from the team's `main` branch.
+Antigravity's subsequent parser/state/intake work remains separate until its interface
+and ownership are agreed. No live recipient acceptance, delivery route or recovered-food
+total should be claimed from generated operational profiles.
+
 ---
 
 ## Why this one matters
