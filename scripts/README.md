@@ -1,5 +1,15 @@
 # scripts/
 
+## Application build and deployment
+
+- `serve.py` starts the private, loopback Toolbox process and the web application.
+- `deploy_cloud_run.sh` deploys the app to a new authenticated Cloud Run service.
+  Follow [agent/README.md](../agent/README.md) for dependencies, environment variables,
+  tests and invocation.
+
+The application uses the existing BigQuery dataset. Its build/deploy path does not
+reload tables or alter the lab's pre-provisioned VMs.
+
 ## `load.sh`
 
 A headless fallback that reaches the same end state as `notebooks/c2_01_load_explore.ipynb`,
