@@ -7,9 +7,10 @@ import os
 import logging
 from datetime import datetime, timezone
 from functools import lru_cache
+from pathlib import Path
 from typing import Literal, Optional
 from fastapi import FastAPI, HTTPException, Query
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -22,6 +23,15 @@ app = FastAPI(
     description="Intelligent Surplus Brokering using BigQuery Vector Search and Gemini",
     version="1.0.0",
 )
+
+try:
+    from .live_intake import router as live_router
+except ImportError:
+    try:
+        from agent.live_intake import router as live_router
+    except ImportError:
+        from live_intake import router as live_router
+app.include_router(live_router)
 
 # The browser UI is same-origin. Cross-origin clients must be explicitly configured.
 allowed_origins = [value.strip() for value in os.getenv("CORS_ORIGINS", "").split(",") if value.strip()]
@@ -198,6 +208,16 @@ async def match_surplus(req: MatchRequest):
     return JSONResponse(content=result)
 
 
+@app.get("/ui/recipient-explorer.js", include_in_schema=False)
+def recipient_explorer_script():
+    return FileResponse(Path(__file__).parent / "ui/recipient-explorer.js", media_type="text/javascript")
+
+
+@app.get("/ui/recipient-explorer.css", include_in_schema=False)
+def recipient_explorer_style():
+    return FileResponse(Path(__file__).parent / "ui/recipient-explorer.css", media_type="text/css")
+
+
 @app.get("/", response_class=HTMLResponse)
 def index_dashboard():
     """Serves the full-featured interactive Map Dashboard for coordinators & team demos."""
@@ -285,12 +305,17 @@ def index_dashboard():
     #offer-panel label { font-size:13px; color:var(--secondary); }
     #offer-panel h2, #scenario-panel h2 { font-size:15px; text-transform:none; letter-spacing:-.01em; color:var(--ink); }
     #input-text { min-height:104px; resize:vertical; }
+    .voice-transcript { max-height:180px; overflow-y:auto; overflow-wrap:anywhere; }
+    .voice-transcript p + p { margin-top:8px; }
+    .voice-draft { display:grid; grid-template-columns:minmax(0,1fr); gap:6px; overflow-wrap:anywhere; }
+    #voice-text { resize:vertical; }
     #brief-container h3 { text-transform:none; font-size:14px; letter-spacing:0; }
     #brief-container .brief-badges { display:flex; flex-wrap:wrap; gap:8px; margin-top:8px; }
     #brief-clock, #brief-provenance { background:var(--warning-soft); border-radius:7px; padding:10px 12px; }
     #handoff-panel { background:#f8fafb; }
     #city-caveats { margin-top:8px; }
     #city-caveats p + p { margin-top:8px; }
+    #map-panel { grid-column:1 / -1; }
     #map { height:430px; width:100%; border:1px solid var(--line); border-radius:10px; }
     #map-controls label { min-height:40px; align-items:center; }
     #map-controls select { max-width:100%; }
@@ -332,6 +357,7 @@ def index_dashboard():
     }
     @media (prefers-reduced-motion:reduce) { * { scroll-behavior:auto !important; } }
   </style>
+  <link rel="stylesheet" href="/ui/recipient-explorer.css">
 </head>
 <body id="rescue-app">
   <a href="#offer-panel" class="skip-link">Skip to surplus offer</a>
@@ -416,12 +442,13 @@ def index_dashboard():
           </div>
           <div>
             <label for="input-hours" class="block text-xs text-muted mb-1">Pickup window (hours)</label>
-            <input id="input-hours" oninput="offerChanged()" type="number" min="0.01" max="168" step="0.5" value="6.0"
+            <input id="input-hours" oninput="offerChanged('hours')" type="number" min="0.01" max="168" step="0.5" value="6.0"
                    class="w-full surface-field border border-line rounded-lg px-2.5 py-2 text-sm text-ink focus:outline-none" />
           </div>
         </div>
 
         <p id="origin-note" class="text-xs text-muted">Origin: Pike Place demo coordinates. Pallet quantity is a scenario assumption, not a crates-to-pallet conversion.</p>
+        <p id="voice-clock-note" class="text-xs text-secondary hidden"></p>
         <div id="match-status" role="status" aria-live="polite" class="text-sm text-secondary"></div>
         <button id="btn-match" onclick="runMatching()"
                 class="button-primary mt-2 w-full">
@@ -429,6 +456,27 @@ def index_dashboard():
           <span>Find a viable match</span>
         </button>
       </div>
+
+      <details id="voice-panel" class="surface-card rounded-xl p-5 border border-line">
+        <summary class="text-sm font-semibold text-accent cursor-pointer">Talk through an offer · optional</summary>
+        <p class="text-xs text-muted mt-3">Gemini Live can help draft the offer using the visible form and its origin coordinates. Review demo assumptions first. Microphone audio is sent only after Start microphone; typed notes work without it. Review and apply the draft yourself, then run matching separately. Nothing is dispatched.</p>
+        <p id="voice-status" role="status" aria-live="polite" class="text-xs text-secondary mt-3">Checking whether live intake is available…</p>
+        <div class="result-actions">
+          <button id="voice-start" type="button" class="action-secondary" disabled onclick="startVoiceSession(true)">Start microphone</button>
+          <button id="voice-stop" type="button" class="action-secondary" disabled onclick="stopVoiceSession()">Stop session</button>
+        </div>
+        <label for="voice-text" class="block text-xs text-secondary mt-3 mb-1">Or type a note to the intake agent</label>
+        <textarea id="voice-text" rows="2" maxlength="4000" disabled placeholder="For example: the pickup deadline is 5 pm today, Seattle time." class="w-full surface-field border border-line rounded-lg px-3 py-2 text-sm text-ink"></textarea>
+        <button id="voice-send" type="button" class="action-secondary mt-2" disabled onclick="sendVoiceText()">Send note</button>
+        <div id="voice-transcript" class="voice-transcript text-xs text-secondary mt-3" aria-label="Session transcript"></div>
+        <div id="voice-review" class="hidden border-t border-line mt-3 pt-3">
+          <h3 class="text-sm font-semibold text-ink">Review proposed offer fields</h3>
+          <div id="voice-draft" class="voice-draft text-xs text-secondary mt-2"></div>
+          <p id="voice-missing" role="status" class="text-xs text-warning mt-2"></p>
+          <p class="text-xs text-muted mt-2">Check the exact deadline, pickup origin, quantity and storage before applying. Applying stops the session and updates the form; it does not request a match.</p>
+          <button id="voice-apply" type="button" class="action-secondary mt-2" disabled onclick="applyVoiceDraft()">Apply reviewed draft to form</button>
+        </div>
+      </details>
 
       <!-- Optional advisory lookup: independent of the offer and matching clock. -->
       <details id="foodkeeper-panel" class="surface-card rounded-xl p-5 border border-line">
@@ -482,6 +530,7 @@ def index_dashboard():
             <span class="text-xs font-bold text-positive uppercase tracking-wider">Proposed Match Brief</span>
             <h2 id="brief-winner-name" class="text-2xl font-bold text-ink">Winner Name</h2>
             <p id="brief-winner-address" class="text-xs text-muted">Address</p>
+            <button id="inspect-winner" class="action-secondary" type="button" onclick="RecipientExplorer.select(currentPayload?.winner?.recipient_id, this)">Inspect profile &amp; offer fit</button>
           </div>
           <div class="brief-badges">
             <span id="brief-badge-storage" class="text-xs font-semibold px-3 py-1 rounded surface-inset text-accent border border-control">Storage</span>
@@ -555,22 +604,29 @@ def index_dashboard():
 
       </div>
 
+      <details id="run-evidence" class="surface-card rounded-xl p-4 border border-line hidden">
+        <summary class="text-sm text-secondary cursor-pointer">Live execution trace</summary>
+        <pre id="execution-trace" class="whitespace-pre-wrap break-words text-xs text-muted mt-2"></pre>
+      </details>
+
+
+    </div>
+
       <!-- Map Card -->
       <div id="map-panel" class="surface-card rounded-xl p-4 border border-line flex flex-col gap-3">
         <div class="flex flex-wrap gap-3 justify-between items-center px-1">
           <div class="flex items-center gap-2 text-sm font-semibold text-ink">
             <i class="fa-solid fa-map-location-dot text-positive"></i>
-            <span>Seattle Match Map</span>
+            <span>Seattle recipients &amp; offer fit</span>
           </div>
           <div class="flex flex-wrap items-center gap-3 text-xs">
             <span class="flex items-center gap-1"><span class="w-3 h-3 rounded-full dot-donor inline-block"></span> Donor</span>
-            <span class="flex items-center gap-1"><span class="w-3 h-3 rounded-full dot-winner inline-block"></span> Winner</span>
-            <span class="flex items-center gap-1"><span class="w-3 h-3 rounded-full dot-viable inline-block"></span> Viable</span>
-            <span class="flex items-center gap-1"><span class="w-3 h-3 rounded-full dot-rejected inline-block"></span> Eliminated Decoy</span>
+            <span>1 = proposed · 2–3 = backups · ? = needs details · × = rejected</span>
           </div>
         </div>
         <div id="map-controls" class="flex flex-wrap gap-3 items-center text-xs surface-inset p-3 rounded-lg">
           <button id="btn-city" onclick="loadCityData()" class="action-secondary">Load city data</button>
+          <button id="fit-recipient-view" onclick="fitRecipientView()" class="action-secondary">Fit visible profiles</button>
           <label class="flex items-center gap-1"><input id="show-need" type="checkbox" checked onchange="renderCityLayers()"> Census need heatmap</label>
           <label class="flex items-center gap-1"><input id="show-recipients" type="checkbox" checked onchange="renderCityLayers()"> Recipient capabilities</label>
           <label for="heat-metric">Need indicator</label>
@@ -584,12 +640,43 @@ def index_dashboard():
         </div>
         <p id="city-status" role="status" class="text-xs text-warning">Needs data — load the Seattle census and recipient layers.</p>
         <p id="map-tile-status" role="status" class="text-xs text-warning hidden"></p>
-        <div id="map"></div>
+        <p class="text-sm text-secondary">Explore a profile, inspect its evidence, and compare the recipients returned for your offer. Dataset capacity is not confirmed availability.</p>
+        <div class="recipient-browser">
+          <div id="map" aria-label="Seattle approximate recipient and census locations"></div>
+          <section class="recipient-directory" aria-label="Recipient directory">
+            <label for="recipient-search">Find a recipient</label>
+            <input id="recipient-search" type="search" placeholder="Organization or city" oninput="renderCityLayers()" autocomplete="off">
+            <div class="recipient-filters">
+              <div>
+                <label for="outcome-filter">Offer decision</label>
+                <select id="outcome-filter" onchange="renderCityLayers()">
+                  <option value="all">All decisions</option>
+                  <option value="eligible">Eligible proposals</option>
+                  <option value="needs_confirmation">Needs confirmation</option>
+                  <option value="rejected">Rejected</option>
+                  <option value="not_evaluated">Not evaluated</option>
+                </select>
+              </div>
+              <div>
+                <label for="provenance-filter">Profile source</label>
+                <select id="provenance-filter" onchange="renderCityLayers()">
+                  <option value="all">All sources</option>
+                  <option value="generated">Generated operations</option>
+                  <option value="planted">Invented teaching case</option>
+                  <option value="unknown">Unknown source</option>
+                </select>
+              </div>
+            </div>
+            <p id="recipient-count" role="status" aria-live="polite">Loading recipient profiles…</p>
+            <div id="recipient-list"></div>
+          </section>
+        </div>
+        <section id="recipient-compare" aria-label="Compare current eligible proposals"></section>
         <div id="heat-legend" class="text-xs text-secondary">
           <div style="height:8px;background:linear-gradient(to right,#2563eb,#06b6d4,#facc15,#f97316,#ef4444);border-radius:4px;max-width:280px"></div>
           <span id="heat-legend-label">Low → high combined need (0–1); mean of poverty and no-vehicle rates. Smoothed tract-centroid points, not tract boundaries or individual hunger.</span>
         </div>
-        <p class="text-xs text-muted">Capability points: purple = freezer · blue = refrigeration · gray = other/unknown. These are dataset profiles, not live availability.</p>
+        <p class="text-xs text-muted">Unevaluated capability points: purple = freezer · blue = refrigeration · gray = other/unknown. An outlined marker is selected. These are dataset profiles, not live availability.</p>
         <p id="city-provenance" class="text-xs text-muted">Sources have not been loaded.</p>
         <details class="text-xs text-muted"><summary class="cursor-pointer">Sources and limits of this map</summary><div id="city-caveats"></div><pre id="city-source-details" class="whitespace-pre-wrap break-words mt-2"></pre></details>
         <p id="route-status" class="text-xs text-warning">Routing unavailable — no verified road route has been returned. Any dashed line is an illustrative straight-line connection.</p>
@@ -598,16 +685,13 @@ def index_dashboard():
 
       </div>
 
-      <details id="run-evidence" class="surface-card rounded-xl p-4 border border-line hidden">
-        <summary class="text-sm text-secondary cursor-pointer">Live execution trace</summary>
-        <pre id="execution-trace" class="whitespace-pre-wrap break-words text-xs text-muted mt-2"></pre>
-      </details>
-
-
-    </div>
-
   </main>
   </div>
+
+  <aside id="recipient-detail" class="hidden" role="dialog" aria-labelledby="recipient-detail-title" tabindex="-1">
+    <button id="recipient-close" type="button" class="action-secondary" onclick="RecipientExplorer.close()" aria-label="Close recipient profile">Close profile</button>
+    <div id="recipient-detail-content"></div>
+  </aside>
 
   <!-- Leaflet & App JS -->
   <script>
@@ -621,6 +705,7 @@ def index_dashboard():
     let selectedOrigin = {latitude: 47.6097, longitude: -122.3422};
     let currentOfferKey = null;
     let pickupDeadline = null;
+    let appliedVoiceDeadline = null;
     let matchInFlight = false;
     let scenarioButtons = [];
     const offerFieldIds = ['input-donor','input-text','input-storage','input-pallets','input-hours'];
@@ -658,6 +743,7 @@ def index_dashboard():
       offerFieldIds.forEach(id => { document.getElementById(id).disabled = locked; });
       scenarioButtons.forEach(button => { button.disabled = locked; });
       document.getElementById('btn-match').disabled = locked;
+      refreshVoiceControls();
     }
     function reviewState(state, title, description, counts = '') {
       const panel = document.getElementById('review-panel');
@@ -673,8 +759,17 @@ def index_dashboard():
       document.getElementById('action-handoff').classList.toggle('hidden',!hasMatch);
       document.getElementById('step-handoff').disabled = !hasMatch;
     }
-    function offerChanged() {
+    function offerChanged(field) {
       if (matchInFlight) return;
+      if (field === 'hours') {
+        appliedVoiceDeadline = null;
+        currentOfferKey = null;
+        pickupDeadline = null;
+        document.getElementById('voice-clock-note').classList.add('hidden');
+      }
+      if (voice.socket || voice.starting) stopVoiceSession('Offer changed. Start a new session to use the updated form.');
+      voice.draft = null;
+      refreshVoiceControls();
       currentPayload = null;
       document.getElementById('brief-container').classList.add('hidden');
       document.getElementById('run-evidence').classList.add('hidden');
@@ -687,9 +782,305 @@ def index_dashboard():
       document.getElementById('decoys-list').replaceChildren(textNode('p','Run the updated offer to refresh its candidate checks.'));
       scenarioButtons.forEach(button => button.setAttribute('aria-pressed','false'));
       if (markersLayer) markersLayer.clearLayers();
+      renderCityLayers();
       reviewState('idle','Ready to check this offer','Review the quantity, storage and actual pickup window, then run a live match.');
       setWorkflow('offer');
       setStatus('Ready to check the current offer.');
+    }
+    // Voice intake is a bounded drafting session. Only runMatching calls the broker.
+    const voice = {enabled:false, config:null, socket:null, starting:false, ready:false, generation:0,
+      stream:null, inputContext:null, outputContext:null, source:null, worklet:null, workletURL:null,
+      playback:new Set(), nextPlayback:0, timer:null, resolveReady:null, draft:null, draftId:null, draftVersion:-1, transcript:[], sentBytes:0};
+    function voiceStatus(message) { document.getElementById('voice-status').textContent = message; }
+    function voiceDraftErrors(draft) {
+      const f = draft?.fields || {}, errors = [];
+      if (typeof f.donor_name !== 'string' || !f.donor_name.trim() || f.donor_name.length > 200) errors.push('donor name');
+      if (typeof f.posting_text !== 'string' || f.posting_text.trim().length < 5 || f.posting_text.length > 4000) errors.push('surplus description');
+      if (!['ambient','cold','frozen'].includes(f.required_storage)) errors.push('storage');
+      if (!Number.isFinite(f.pallet_count) || f.pallet_count <= 0 || f.pallet_count > 10000) errors.push('pallet quantity');
+      if (!Number.isFinite(f.hours_remaining) || f.hours_remaining <= 0 || f.hours_remaining > 168) errors.push('pickup window');
+      if (!validPoint({latitude:f.donor_lat,longitude:f.donor_lon})) errors.push('origin coordinates');
+      if (typeof f.deadline_at !== 'string' || !/(Z|[+-]\d{2}:\d{2})$/i.test(f.deadline_at)
+          || !Number.isFinite(Date.parse(f.deadline_at)) || Date.parse(f.deadline_at) <= Date.now()
+          || Date.parse(f.deadline_at) > Date.now() + 168 * 3600000) errors.push('future deadline with timezone');
+      return errors;
+    }
+    function refreshVoiceControls() {
+      const available = voice.enabled && !matchInFlight;
+      document.getElementById('voice-start').disabled = !available || !!voice.socket || voice.starting;
+      document.getElementById('voice-stop').disabled = !voice.socket && !voice.starting;
+      document.getElementById('voice-send').disabled = !available || voice.starting;
+      document.getElementById('voice-text').disabled = !available;
+      document.getElementById('voice-apply').disabled = matchInFlight || !voice.draft?.ready_for_review
+        || voiceDraftErrors(voice.draft).length > 0;
+    }
+    async function loadVoiceConfig() {
+      try {
+        const response = await fetch('/api/live/config');
+        if (!response.ok) throw new Error('unavailable');
+        voice.config = await response.json();
+        voice.enabled = voice.config.enabled === true && typeof WebSocket !== 'undefined';
+        voiceStatus(voice.enabled ? `Optional live intake is available. Start the microphone or send a typed note. Sessions last up to ${Math.ceil(voiceSessionSeconds()/60)} minutes.`
+          : 'Live intake is not enabled here. The offer form and matching work normally.');
+      } catch (_) {
+        voice.enabled = false;
+        voiceStatus('Live intake is unavailable. Continue with the offer form.');
+      }
+      refreshVoiceControls();
+    }
+    function voiceSessionSeconds() {
+      const seconds = voice.config?.max_session_seconds;
+      return Number.isFinite(seconds) && seconds > 0 ? Math.min(seconds,300) : 180;
+    }
+    function voiceFormContext() {
+      // Include only visible, valid values. Missing fields stay missing, never guessed.
+      const fields = {}, donor = document.getElementById('input-donor').value.trim();
+      const description = document.getElementById('input-text').value.trim();
+      const storage = document.getElementById('input-storage').value;
+      const pallets = Number(document.getElementById('input-pallets').value);
+      const hours = Number(document.getElementById('input-hours').value);
+      if (donor && donor.length <= 200) fields.donor_name = donor;
+      if (description.length >= 5 && description.length <= 4000) fields.posting_text = description;
+      if (['ambient','cold','frozen'].includes(storage)) fields.required_storage = storage;
+      if (Number.isFinite(pallets) && pallets > 0 && pallets <= 10000) fields.pallet_count = pallets;
+      if (Number.isFinite(hours) && hours > 0 && hours <= 168) fields.hours_remaining = hours;
+      if (validPoint(selectedOrigin)) { fields.donor_lat = selectedOrigin.latitude; fields.donor_lon = selectedOrigin.longitude; }
+      try { fields.deadline_at = buildRequest().deadline_at; }
+      catch (_) { if (appliedVoiceDeadline) fields.deadline_at = appliedVoiceDeadline; }
+      return fields;
+    }
+    function renderVoiceDraft(message) {
+      if (typeof message.draft_id !== 'string' || !Number.isInteger(message.draft_version) || message.draft_version < 0) return;
+      if ((voice.draftId && voice.draftId !== message.draft_id) || message.draft_version <= voice.draftVersion) return;
+      voice.draftId = message.draft_id;
+      voice.draftVersion = message.draft_version;
+      voice.draft = message;
+      const box = document.getElementById('voice-draft');
+      box.replaceChildren();
+      const fields = message.fields || {};
+      const labels = {donor_name:'Donor',posting_text:'Available surplus',required_storage:'Storage',pallet_count:'Pallets',
+        donor_lat:'Origin latitude',donor_lon:'Origin longitude',deadline_at:'Exact pickup deadline',hours_remaining:'Hours remaining at draft time'};
+      Object.entries(labels).forEach(([key,label]) => {
+        const value = fields[key];
+        box.appendChild(textNode('p',`${label}: ${value == null ? 'Not supplied' : String(value).slice(0,4000)}`));
+      });
+      const errors = voiceDraftErrors(message);
+      const missing = Array.isArray(message.missing_fields) ? message.missing_fields.slice(0,12).map(value=>String(value).slice(0,100)) : [];
+      document.getElementById('voice-missing').textContent = message.ready_for_review && !errors.length
+        ? `Ready for your review.${message.deadline_changed ? ' The proposed deadline changed; confirm it with the donor.' : ''}`
+        : `Still needs confirmation: ${[...new Set([...missing,...errors])].join(', ') || 'the intake agent has not completed this draft'}.`;
+      document.getElementById('voice-review').classList.remove('hidden');
+      refreshVoiceControls();
+    }
+    function appendVoiceTranscript(message) {
+      if (!['user','model'].includes(message.role) || typeof message.text !== 'string') return;
+      const text = message.text.slice(0,4000), last = voice.transcript[voice.transcript.length - 1];
+      if (last && last.role === message.role && !last.final) { last.text = (last.text + text).slice(-6000); last.final = message.final === true; }
+      else voice.transcript.push({role:message.role,text,final:message.final === true});
+      voice.transcript = voice.transcript.slice(-16);
+      const box = document.getElementById('voice-transcript');
+      box.replaceChildren(...voice.transcript.map(item=>textNode('p',`${item.role === 'user' ? 'You' : 'Intake agent'}: ${item.text}`)));
+    }
+    function flushVoicePlayback() {
+      voice.playback.forEach(source => { try { source.stop(); source.disconnect(); } catch (_) {} });
+      voice.playback.clear();
+      voice.nextPlayback = 0;
+    }
+    function playVoiceAudio(buffer) {
+      const ctx = voice.outputContext;
+      if (!ctx || ctx.state !== 'running' || !buffer.byteLength || buffer.byteLength % 2 || buffer.byteLength > 1024 * 1024) return;
+      if (voice.nextPlayback - ctx.currentTime > 20) { flushVoicePlayback(); voiceStatus('Audio playback was delayed. Continue using the transcript.'); return; }
+      const pcm = new DataView(buffer), audio = ctx.createBuffer(1,buffer.byteLength / 2,24000);
+      const channel = audio.getChannelData(0);
+      for (let i=0;i<channel.length;i++) channel[i] = pcm.getInt16(i*2,true) / 32768;
+      const source = ctx.createBufferSource();
+      source.buffer = audio;
+      source.connect(ctx.destination);
+      voice.playback.add(source);
+      source.onended = () => { voice.playback.delete(source); source.disconnect(); };
+      const start = Math.max(ctx.currentTime,voice.nextPlayback);
+      source.start(start);
+      voice.nextPlayback = start + audio.duration;
+    }
+    function stopVoiceSession(message = 'Session stopped. Review any draft above, or continue with the offer form.') {
+      voice.generation += 1;
+      voice.starting = false;
+      voice.ready = false;
+      if (voice.timer) { clearTimeout(voice.timer); voice.timer = null; }
+      if (voice.resolveReady) { voice.resolveReady(false); voice.resolveReady = null; }
+      const socket = voice.socket;
+      voice.socket = null;
+      if (socket) {
+        socket.onopen = socket.onmessage = socket.onerror = socket.onclose = null;
+        if (socket.readyState === 1) { try { socket.send(JSON.stringify({type:'audio_end'})); socket.send(JSON.stringify({type:'stop'})); } catch (_) {} }
+        try { socket.close(); } catch (_) {}
+      }
+      if (voice.stream) voice.stream.getTracks().forEach(track => { track.onended = null; track.stop(); });
+      voice.stream = null;
+      if (voice.worklet) { voice.worklet.port.onmessage = null; voice.worklet.disconnect(); }
+      if (voice.source) voice.source.disconnect();
+      voice.worklet = voice.source = null;
+      flushVoicePlayback();
+      [voice.inputContext,voice.outputContext].forEach(ctx => { if (ctx && ctx.state !== 'closed') ctx.close().catch(()=>{}); });
+      voice.inputContext = voice.outputContext = null;
+      if (voice.workletURL) URL.revokeObjectURL(voice.workletURL);
+      voice.workletURL = null;
+      voiceStatus(message);
+      refreshVoiceControls();
+    }
+    // Original streaming linear resampler: real device sample rate -> 16 kHz mono PCM.
+    // It holds the final sample across worklet blocks and transfers 20 ms frames.
+    const voiceWorkletSource = `
+      class OfferPCM extends AudioWorkletProcessor {
+        constructor() { super(); this.tail = new Float32Array(0); this.position = 0; this.frame = new Int16Array(320); this.count = 0; }
+        process(inputs) {
+          const input = inputs[0]?.[0];
+          if (!input) return true;
+          const samples = new Float32Array(this.tail.length + input.length);
+          samples.set(this.tail); samples.set(input,this.tail.length);
+          while (this.position + 1 < samples.length) {
+            const left = Math.floor(this.position), fraction = this.position - left;
+            const value = Math.max(-1,Math.min(1,samples[left] + (samples[left+1]-samples[left])*fraction));
+            this.frame[this.count++] = Math.round(value * (value < 0 ? 32768 : 32767));
+            if (this.count === 320) { this.port.postMessage(this.frame.buffer,[this.frame.buffer]); this.frame = new Int16Array(320); this.count = 0; }
+            this.position += sampleRate / 16000;
+          }
+          const keep = Math.min(Math.floor(this.position),samples.length-1);
+          this.tail = samples.slice(keep); this.position -= keep;
+          return true;
+        }
+      }
+      registerProcessor('offer-pcm',OfferPCM);
+    `;
+    async function startVoiceMicrophone(generation) {
+      if (!navigator.mediaDevices?.getUserMedia || typeof AudioWorkletNode === 'undefined') throw new Error('Microphone capture is unavailable in this browser.');
+      const stream = await navigator.mediaDevices.getUserMedia({audio:{channelCount:1,echoCancellation:true,noiseSuppression:true},video:false});
+      if (generation !== voice.generation) { stream.getTracks().forEach(track=>track.stop()); return; }
+      voice.stream = stream;
+      stream.getTracks().forEach(track => { track.onended = () => {
+        if (generation === voice.generation) stopVoiceSession('Microphone capture ended. Review the draft or use a typed note.');
+      }; });
+      const Audio = window.AudioContext || window.webkitAudioContext;
+      const ctx = new Audio();
+      voice.inputContext = ctx;
+      await ctx.resume();
+      if (generation !== voice.generation) return;
+      voice.workletURL = URL.createObjectURL(new Blob([voiceWorkletSource],{type:'text/javascript'}));
+      await ctx.audioWorklet.addModule(voice.workletURL);
+      if (generation !== voice.generation) return;
+      voice.worklet = new AudioWorkletNode(ctx,'offer-pcm');
+      voice.source = ctx.createMediaStreamSource(stream);
+      voice.worklet.port.onmessage = event => {
+        if (generation !== voice.generation || !voice.ready || voice.socket?.readyState !== 1) return;
+        const bytes = event.data.byteLength;
+        if (voice.socket.bufferedAmount > 262144 || voice.sentBytes + bytes > 10000000) {
+          stopVoiceSession('Audio upload reached its limit or the network fell behind. Review the draft or start a new session.'); return;
+        }
+        voice.sentBytes += bytes;
+        voice.socket.send(event.data);
+      };
+      voice.source.connect(voice.worklet);
+      voice.worklet.connect(ctx.destination); // The worklet emits silence; no microphone loopback.
+      voiceStatus('Microphone is on. Describe or clarify the offer; Stop ends audio capture.');
+    }
+    async function startVoiceSession(useMicrophone = false) {
+      if (!voice.enabled || matchInFlight || voice.starting || voice.socket) return false;
+      const generation = ++voice.generation;
+      voice.starting = true;
+      voice.draft = null;
+      voice.draftId = null;
+      voice.draftVersion = -1;
+      voice.transcript = [];
+      voice.sentBytes = 0;
+      document.getElementById('voice-transcript').replaceChildren();
+      document.getElementById('voice-review').classList.add('hidden');
+      refreshVoiceControls();
+      voiceStatus('Connecting to live intake… The offer form remains available.');
+      try {
+        const Audio = window.AudioContext || window.webkitAudioContext;
+        if (Audio) {
+          voice.outputContext = new Audio();
+          await voice.outputContext.resume().catch(()=>{});
+          if (generation !== voice.generation) return false;
+        }
+        const socket = new WebSocket(`${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}/api/live/intake`);
+        voice.socket = socket;
+        socket.binaryType = 'arraybuffer';
+        const connected = new Promise(resolve => { voice.resolveReady = resolve; });
+        voice.timer = setTimeout(()=>stopVoiceSession('Live intake did not connect. Use the form or try again.'),20000);
+        socket.onmessage = event => {
+          if (generation !== voice.generation) return;
+          if (event.data instanceof ArrayBuffer) { playVoiceAudio(event.data); return; }
+          if (typeof event.data !== 'string' || event.data.length > 65536) return;
+          let message;
+          try { message = JSON.parse(event.data); } catch (_) { return; }
+          if (!message || typeof message !== 'object') return;
+          if (message.type === 'ready' && !voice.ready) {
+            socket.send(JSON.stringify({type:'context',fields:voiceFormContext()}));
+            voice.ready = true;
+            voice.starting = false;
+            clearTimeout(voice.timer);
+            voice.timer = setTimeout(()=>stopVoiceSession('The session time limit was reached. Review the draft or start another session.'),voiceSessionSeconds()*1000);
+            voice.resolveReady?.(true); voice.resolveReady = null;
+            voiceStatus('Connected. Send a note or speak when the microphone is on.');
+            refreshVoiceControls();
+          } else if (message.type === 'draft') renderVoiceDraft(message);
+          else if (message.type === 'transcript') appendVoiceTranscript(message);
+          else if (message.type === 'interrupted') flushVoicePlayback();
+          else if (message.type === 'turn_complete') voice.transcript.forEach(item=>{item.final=true;});
+          else if (message.type === 'status') voiceStatus(String(message.message || 'Live intake connected.').slice(0,1000));
+          else if (message.type === 'error') stopVoiceSession(String(message.message || 'Live intake is unavailable. Use the offer form.').slice(0,1000));
+        };
+        socket.onerror = () => { if (generation === voice.generation) stopVoiceSession('Live intake could not connect. Check app access or continue with the form.'); };
+        socket.onclose = () => { if (generation === voice.generation) stopVoiceSession('Live session closed. Review the draft or continue with the form.'); };
+        const ready = await connected;
+        if (!ready || generation !== voice.generation) return false;
+        if (useMicrophone) {
+          try { await startVoiceMicrophone(generation); }
+          catch (_) {
+            if (generation === voice.generation) stopVoiceSession('Microphone unavailable or permission denied. Send a typed note to start a text-only session, or use the form.');
+            return false;
+          }
+        }
+        return generation === voice.generation;
+      } catch (_) {
+        if (generation === voice.generation) stopVoiceSession('Live intake could not start. Continue with the form or try a typed note.');
+        return false;
+      }
+    }
+    async function sendVoiceText() {
+      const input = document.getElementById('voice-text'), text = input.value.trim();
+      if (!voice.enabled || matchInFlight || voice.starting || !text || text.length > 4000) return;
+      const ready = voice.ready || await startVoiceSession(false);
+      if (!ready || voice.socket?.readyState !== 1) return;
+      voice.socket.send(JSON.stringify({type:'text',text}));
+      input.value = '';
+      voiceStatus('Note sent. Review the intake agent’s draft before applying it.');
+    }
+    function applyVoiceDraft() {
+      const draft = voice.draft;
+      if (matchInFlight || !draft?.ready_for_review || voiceDraftErrors(draft).length) {
+        voiceStatus('The draft is incomplete or its deadline has passed. Confirm the missing details before applying.');
+        refreshVoiceControls(); return;
+      }
+      const fields = draft.fields;
+      stopVoiceSession('Reviewed draft applied. Check the form, then select Find a viable match.');
+      offerChanged();
+      document.getElementById('input-donor').value = fields.donor_name;
+      document.getElementById('input-text').value = fields.posting_text;
+      document.getElementById('input-storage').value = fields.required_storage;
+      document.getElementById('input-pallets').value = fields.pallet_count;
+      document.getElementById('input-hours').value = fields.hours_remaining;
+      selectedOrigin = {latitude:fields.donor_lat,longitude:fields.donor_lon};
+      appliedVoiceDeadline = pickupDeadline = fields.deadline_at;
+      currentOfferKey = null;
+      document.getElementById('origin-note').textContent = `Reviewed origin: ${fields.donor_lat}, ${fields.donor_lon}. Confirm the actual pickup location; any demo coordinates remain approximate.`;
+      const clock = document.getElementById('voice-clock-note');
+      clock.textContent = `Fixed pickup deadline: ${fields.deadline_at}. Editing the hours field explicitly replaces this clock; other offer edits preserve it.`;
+      clock.classList.remove('hidden');
+      setStatus('Voice draft applied for review. The exact deadline is preserved. No match or outreach has been requested.');
+      if (typeof RecipientExplorer !== 'undefined') RecipientExplorer.refresh();
+      focusSection('offer-panel');
     }
     function validPoint(point) {
       return point && Number.isFinite(point.latitude) && Number.isFinite(point.longitude)
@@ -780,20 +1171,24 @@ def index_dashboard():
         if (heatLayer && map) { map.removeLayer(heatLayer); heatLayer = null; }
         document.getElementById('city-status').textContent = `Needs data — ${error.message}`;
         document.getElementById('city-provenance').textContent = 'No city data displayed. No heat values or recipient capabilities were fabricated.';
+        renderCityLayers();
       } finally { btn.disabled = false; }
     }
     function renderCityLayers() {
-      if (!cityPayload) return;
-      const tracts = cityPayload.tracts || [];
-      const recipients = cityPayload.recipients || [];
+      if (typeof RecipientExplorer !== 'undefined') RecipientExplorer.refresh();
+      const tracts = cityPayload?.tracts || [];
+      const recipients = cityPayload?.recipients || [];
       const metric = document.getElementById('heat-metric').value || 'need_score';
       const filter = document.getElementById('capability-filter').value || 'all';
       const points = heatPoints(tracts, metric);
-      const visibleRecipients = recipients.filter(r => capabilityVisible(r, filter));
+      const visibleRecipients = typeof RecipientExplorer !== 'undefined'
+        ? RecipientExplorer.visibleRecipients() : recipients.filter(r => capabilityVisible(r, filter));
       const metricLabel = metric === 'need_score' ? 'Combined need = mean of poverty and no-vehicle rates' : metric === 'poverty_rate' ? 'Poverty rate' : 'No-vehicle household rate';
       document.getElementById('heat-legend-label').textContent = `Low → high ${metricLabel} (0–1). Smoothed tract-centroid need proxy; density affects intensity. Not tract boundaries, household food insecurity or individual eligibility.`;
-      document.getElementById('city-status').textContent = `${points.length} census points · ${visibleRecipients.length} recipient profiles in this view. Source caveats are listed below.`;
-      document.getElementById('city-status').className = 'text-xs text-secondary';
+      if (cityPayload) {
+        document.getElementById('city-status').textContent = `${points.length} census points · ${visibleRecipients.length} recipient profiles in this view. Source caveats are listed below.`;
+        document.getElementById('city-status').className = 'text-xs text-secondary';
+      }
       if (!map || !cityRecipientLayer || !tractPointLayer) return;
       cityRecipientLayer.clearLayers();
       tractPointLayer.clearLayers();
@@ -819,13 +1214,26 @@ def index_dashboard():
         const point = cityPoint(recipient);
         if (!validPoint(point)) return;
         const cold = capabilityVisible(recipient, 'cold');
-        L.circleMarker([point.latitude,point.longitude], {radius:5,color:recipient.frozen_storage === true ? '#a78bfa' : cold ? '#38bdf8' : '#94a3b8',weight:2,fillOpacity:0.7})
-          .addTo(cityRecipientLayer).bindPopup(popup(readable(recipient.name), [
+        const decision = recipient._decision || 'not_evaluated';
+        const rank = [currentPayload?.winner, ...(currentPayload?.runners_up || [])]
+          .findIndex(row => row && String(row.recipient_id) === String(recipient.recipient_id)) + 1;
+        let marker;
+        if (decision !== 'not_evaluated') {
+          const color = decision === 'rejected' ? '#b5474d' : decision === 'needs_confirmation' ? '#94631f' : rank === 1 ? '#197764' : '#176b96';
+          const symbol = decision === 'rejected' ? '×' : decision === 'needs_confirmation' ? '?' : String(rank || '✓');
+          // Only application-owned symbols/colors are HTML; profile data remain text nodes.
+          const icon = L.divIcon({className:'custom-pin',html:`<div style="background:${color};color:white;border-radius:50%;padding:5px;text-align:center;font-weight:700">${symbol}</div>`,iconSize:[32,32],iconAnchor:[16,16]});
+          marker = L.marker([point.latitude,point.longitude], {icon,title:readable(recipient.name)});
+        } else {
+          marker = L.circleMarker([point.latitude,point.longitude], {radius:5,color:recipient.frozen_storage === true ? '#a78bfa' : cold ? '#38bdf8' : '#94a3b8',weight:2,fillOpacity:0.7});
+        }
+        marker.addTo(cityRecipientLayer).bindPopup(popup(readable(recipient.name), [
             `Profile storage: ${readable(recipient.cold_storage)}; freezer: ${readable(recipient.frozen_storage)}`,
             `Profile capacity: ${readable(recipient.max_pallets, ' pallets')}`,
             `Receiving days: ${readable(recipient.service_days)}`, `Source: ${readable(recipient.profile_source)}`,
             'Approximate location; capability and current availability require confirmation.'
           ]));
+        if (typeof RecipientExplorer !== 'undefined') RecipientExplorer.markMarker(marker, recipient);
       });
     }
     function renderRoute(route, donor, winner) {
@@ -839,6 +1247,12 @@ def index_dashboard():
       // Google directions open on Google Maps; no road geometry or travel time is invented here.
       document.getElementById('route-status').textContent = 'Routing unavailable on this map — open Google Maps to calculate directions using approximate endpoints. Dashed line is an illustrative straight-line connection; no travel time is claimed.';
       if (markersLayer && validPoint(donor) && validPoint(winner)) L.polyline([[donor.latitude,donor.longitude],[winner.latitude,winner.longitude]], {color:'#10b981',weight:3,dashArray:'6, 6'}).addTo(markersLayer);
+    }
+    function fitRecipientView() {
+      if (!map) return;
+      const recipients = typeof RecipientExplorer !== 'undefined'
+        ? RecipientExplorer.visibleRecipients() : (cityPayload?.recipients || []);
+      fitSeattleResults(currentPayload?.donor || {}, {}, recipients.map(cityPoint));
     }
     async function searchFoodKeeper() {
       const button = document.getElementById('btn-foodkeeper');
@@ -906,8 +1320,11 @@ def index_dashboard():
       selectedOrigin = {latitude: sc.donor_lat, longitude: sc.donor_lon};
       currentOfferKey = null;
       pickupDeadline = null;
+      appliedVoiceDeadline = null;
+      document.getElementById('voice-clock-note').classList.add('hidden');
       document.getElementById('origin-note').textContent = `Origin: ${sc.donor_name} demo coordinates. Pallet quantity is a scenario assumption; confirm the actual volume.`;
       setStatus(sc.notes || 'Scenario loaded. Review the offer, then run a live match.');
+      if (typeof RecipientExplorer !== 'undefined') RecipientExplorer.refresh();
     }
     function retailPresets(scenarios) {
       const bakery = scenarios.find(sc => sc.id === 'bakery');
@@ -955,7 +1372,11 @@ def index_dashboard():
       if (!Number.isFinite(req.pallet_count) || req.pallet_count <= 0 || req.pallet_count > 10000) throw new Error('Enter a positive pallet quantity, up to 10,000.');
       if (!Number.isFinite(req.hours_remaining) || req.hours_remaining <= 0 || req.hours_remaining > 168) throw new Error('Enter a pickup window greater than zero and at most 168 hours.');
       const key = JSON.stringify(req);
-      if (key !== currentOfferKey) {
+      if (appliedVoiceDeadline) {
+        if (!(Date.parse(appliedVoiceDeadline) > Date.now())) throw new Error('The reviewed pickup deadline has passed. Confirm a new window with the donor.');
+        pickupDeadline = appliedVoiceDeadline;
+        currentOfferKey = key;
+      } else if (key !== currentOfferKey) {
         currentOfferKey = key;
         pickupDeadline = new Date(Date.now() + req.hours_remaining * 3600000).toISOString();
       }
@@ -976,6 +1397,7 @@ def index_dashboard():
       document.getElementById('decoys-list').replaceChildren(textNode('p','Candidate checks are in progress for this offer.'));
       currentPayload = null;
       if (markersLayer) markersLayer.clearLayers();
+      renderCityLayers();
       setStatus('Checking semantic candidates, storage, capacity and the same pickup deadline…');
       reviewState('loading','Checking this offer','The live broker is retrieving candidates and checking feasibility. The offer is locked until this request finishes.');
       setWorkflow('review');
@@ -1012,7 +1434,17 @@ def index_dashboard():
       if (!markersLayer || !validPoint(point)) return;
       // All HTML below is static application markup; source data go into text nodes.
       const icon = L.divIcon({className: 'custom-pin', html: `<div style="background:${color};color:white;border-radius:50%;padding:7px;text-align:center">${symbol}</div>`, iconSize: [32,32], iconAnchor: [16,16]});
-      L.marker([point.latitude, point.longitude], {icon}).addTo(markersLayer).bindPopup(popup(title, lines));
+      const marker = L.marker([point.latitude, point.longitude], {icon, title}).addTo(markersLayer).bindPopup(popup(title, lines));
+      if (typeof RecipientExplorer !== 'undefined' && point.recipient_id != null) RecipientExplorer.markMarker(marker, point);
+    }
+    function profileButton(candidate) {
+      if (candidate.recipient_id == null) return null;
+      const button = textNode('button', 'Inspect profile & checks', 'action-secondary');
+      button.type = 'button';
+      button.onclick = () => {
+        if (typeof RecipientExplorer !== 'undefined') RecipientExplorer.select(candidate.recipient_id, button);
+      };
+      return button;
     }
     function renderDecoys(decoys) {
       const container = document.getElementById('decoys-list');
@@ -1023,11 +1455,14 @@ def index_dashboard():
         row.className = 'p-3 rounded-lg surface-card border border-negative text-secondary';
         row.appendChild(textNode('strong', d.name, 'block text-negative'));
         row.appendChild(textNode('span', (d.elimination_reasons || []).join(' '), 'text-muted'));
+        const inspect = profileButton(d);
+        if (inspect) row.appendChild(inspect);
         container.appendChild(row);
       });
     }
     function renderResults(data) {
       currentPayload = data;
+      renderCityLayers();
       document.getElementById('handoff-feedback').textContent = '';
       if (markersLayer) markersLayer.clearLayers();
       const decoys = data.eliminated_decoys || [];
@@ -1042,6 +1477,8 @@ def index_dashboard():
         row.appendChild(textNode('strong',candidate.name,'block text-warning'));
         const reasons = [...new Set([...(candidate.elimination_reasons || []),...(candidate.confirmations_required || [])])];
         row.appendChild(textNode('p',reasons.join(' ') || 'Confirm the missing recipient details before treating this as a viable match.','text-secondary'));
+        const inspect = profileButton(candidate);
+        if (inspect) row.appendChild(inspect);
         pendingList.appendChild(row);
       });
       const trace = data.execution_trace || [];
@@ -1074,6 +1511,8 @@ def index_dashboard():
         row.appendChild(textNode('strong', `${index + 2}. ${readable(candidate.name)}`, 'block text-accent'));
         row.appendChild(textNode('p', `Profile storage: ${readable(candidate.cold_storage)} · Capacity: ${readable(candidate.max_pallets, ' pallets')}`));
         row.appendChild(textNode('p', `Pickup window: ${readable(candidate.pickup_window_hours, 'h')} · Recipient confirmation required.`));
+        const inspect = profileButton(candidate);
+        if (inspect) row.appendChild(inspect);
         alternativeList.appendChild(row);
       });
       if (alternatives.length < 2) alternativeList.appendChild(textNode('p', alternatives.length ? 'One backup passed the available checks. A second option is not available.' : 'No backup passed the available checks. Confirm the top candidate before planning a collection.'));
@@ -1085,18 +1524,7 @@ def index_dashboard():
         `1 proposed · ${alternatives.length} backup${alternatives.length === 1 ? '' : 's'} · ${decoys.length} rejected · ${pending.length} awaiting details`);
       setWorkflow('review');
       addMarker(donor, '#f59e0b', '●', `Donor: ${readable(donor.name)}`, [donor.posting_text || '']);
-      addMarker(winner, '#10b981', '★', `Top candidate: ${readable(winner.name)}`, [
-        `${readable(winner.street)}, ${readable(winner.city)}`,
-        `Profile storage: ${readable(winner.cold_storage)}`,
-        `Profile capacity: ${readable(winner.max_pallets, ' pallets')}`,
-        `Source: ${readable(winner.profile_source)}`,
-        'Recipient acceptance and actual pickup are not yet confirmed.'
-      ]);
       renderRoute(data.route, donor, winner);
-      alternatives.forEach(v => addMarker(v, '#0ea5e9', '●', `Alternative: ${readable(v.name)}`, [
-        `Storage: ${readable(v.cold_storage)}`, `Capacity: ${readable(v.max_pallets, ' pallets')}`, `Source: ${readable(v.profile_source)}`
-      ]));
-      decoys.forEach(d => addMarker(d, '#f43f5e', '×', `Rejected: ${readable(d.name)}`, d.elimination_reasons || []));
       document.getElementById('brief-container').classList.remove('hidden');
       document.getElementById('brief-winner-name').textContent = readable(winner.name);
       document.getElementById('brief-winner-address').textContent = `${readable(winner.street)}, ${readable(winner.city)}, WA ${readable(winner.zip_code)}`;
@@ -1167,10 +1595,13 @@ def index_dashboard():
       initMap();
       loadScenarios();
       loadCityData();
+      loadVoiceConfig();
       setStatus('Choose a scenario or enter an offer, then run a live match.');
       setWorkflow('offer');
     };
+    window.addEventListener?.('pagehide', () => stopVoiceSession('Session closed.'));
   </script>
+  <script src="/ui/recipient-explorer.js"></script>
 
 </body>
 </html>

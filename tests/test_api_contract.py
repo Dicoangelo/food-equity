@@ -55,6 +55,24 @@ def test_served_inline_javascript_parses(client):
     broker.broker_posting_async.assert_not_called()
 
 
+def test_recipient_explorer_assets_are_same_origin_and_do_not_call_broker(client):
+    http, broker = client
+    html = http.get('/').text
+    assert 'src="/ui/recipient-explorer.js"' in html
+    assert 'href="/ui/recipient-explorer.css"' in html
+    script = http.get('/ui/recipient-explorer.js')
+    assert script.status_code == 200
+    assert 'javascript' in script.headers['content-type']
+    checked = subprocess.run(['node', '--check'], input=script.text, text=True, capture_output=True)
+    assert checked.returncode == 0, checked.stderr
+    style = http.get('/ui/recipient-explorer.css')
+    assert style.status_code == 200
+    assert 'text/css' in style.headers['content-type']
+    assert '#recipient-detail' in style.text
+    assert http.get('/ui/api.py').status_code == 404
+    broker.broker_posting_async.assert_not_called()
+
+
 @pytest.mark.parametrize('field,value', [
     ('pallet_count', -1), ('pallet_count', 0), ('hours_remaining', 0), ('hours_remaining', -1),
     ('hours_remaining', 169), ('donor_lat', 91), ('donor_lon', -181),

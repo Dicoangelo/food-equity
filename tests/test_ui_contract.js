@@ -223,4 +223,176 @@ async function testRescueWorkflow() {
   assert.equal(nodes.get('action-retry').classList.contains('hidden'),false);
   console.log('Rescue workflow: fill-only presets, pending facts, single-flight requests, invalidated results, truthful handoff copies and recoverable errors passed.');
 }
-testRescueWorkflow().catch(error=>{console.error(error);process.exitCode=1;});
+async function testVoiceIntake() {
+  const timers=new Map(); let timerId=0;
+  context.setTimeout=(fn,ms)=>{timers.set(++timerId,{fn,ms});return timerId;};
+  context.clearTimeout=id=>timers.delete(id);
+  context.location={protocol:'https:',host:'food.example'};
+  Object.assign(context,{ArrayBuffer,DataView,Float32Array,Int16Array,Blob});
+  const revoked=[];
+  context.URL={createObjectURL:()=> 'blob:worklet-test',revokeObjectURL:url=>revoked.push(url)};
+  const sockets=[];
+  class Socket {
+    constructor(url){this.url=url;this.readyState=1;this.bufferedAmount=0;this.sent=[];sockets.push(this);}
+    send(data){this.sent.push(data);}
+    close(){this.readyState=3;this.closed=true;}
+    receive(data){this.onmessage?.({data:typeof data==='string'?data:JSON.stringify(data)});}
+  }
+  context.WebSocket=Socket;
+  const audioContexts=[];
+  class AudioContext {
+    constructor(){this.state='running';this.currentTime=0;this.destination={};this.audioWorklet={addModule:async()=>{}};audioContexts.push(this);}
+    resume(){return Promise.resolve();}
+    close(){this.state='closed';return Promise.resolve();}
+    createMediaStreamSource(){this.input={connect(){},disconnect(){this.disconnected=true;}};return this.input;}
+    createBuffer(channels,n,rate){this.lastRate=rate;this.samples=new Float32Array(n);return {duration:n/rate,getChannelData:()=>this.samples};}
+    createBufferSource(){this.lastSource={connect(){},disconnect(){},start(){this.started=true;},stop(){this.stopped=true;}};return this.lastSource;}
+  }
+  context.window.AudioContext=AudioContext;
+  const worklets=[];
+  context.AudioWorkletNode=class {
+    constructor(){this.port={};worklets.push(this);}
+    connect(){}
+    disconnect(){this.disconnected=true;}
+  };
+  const streams=[];
+  const createStream=()=>{const track={stopped:false,stop(){this.stopped=true;}};const stream={track,getTracks:()=>[track]};streams.push(stream);return stream;};
+  let micRequests=0;
+  context.navigator.mediaDevices={getUserMedia:async()=>{micRequests++;return createStream();}};
+  const calls=[];
+  context.fetch=async url=>{calls.push(url);return {ok:true,json:async()=>({enabled:false,max_session_seconds:180})};};
+  await context.loadVoiceConfig();
+  await context.startVoiceSession(true);
+  assert.equal(sockets.length,0,'Disabled config must not connect a session');
+  assert.equal(micRequests,0,'Config check and disabled Start must not request microphone permission');
+  assert.equal(nodes.get('voice-start').disabled,true);
+  assert.match(nodes.get('voice-status').textContent,/not enabled/);
+  context.fetch=async url=>{calls.push(url);return {ok:true,json:async()=>({enabled:true,max_session_seconds:180})};};
+  await context.loadVoiceConfig();
+  assert.equal(micRequests,0,'Enabled config alone must not open the microphone');
+  context.applyScenario(scenario);
+  const before=context.buildRequest().deadline_at;
+  const tick=async()=>{await Promise.resolve();await Promise.resolve();await Promise.resolve();};
+  async function readySession(mic=false) {
+    const promise=context.startVoiceSession(mic);
+    await tick();
+    const socket=sockets.at(-1);
+    socket.receive({type:'ready'});
+    await promise;
+    return socket;
+  }
+  const socket=await readySession(true);
+  assert.equal(socket.url,'wss://food.example/api/live/intake');
+  assert.equal(micRequests,1);
+  const initial=JSON.parse(socket.sent[0]);
+  assert.equal(initial.type,'context');
+  assert.equal(initial.fields.deadline_at,before,'Existing form deadline must be forwarded unchanged');
+  assert.equal(initial.fields.donor_lat,scenario.donor_lat);
+  worklets.at(-1).port.onmessage({data:new Int16Array(320).buffer});
+  assert.equal(socket.sent.at(-1).byteLength,640,'Audio uploads are bounded PCM frames');
+  context.playVoiceAudio(new Int16Array([0,32767,-32768]).buffer);
+  assert.equal(audioContexts[0].lastRate,24000,'Live audio playback uses the server’s 24 kHz PCM rate');
+  assert.equal(audioContexts[0].samples[2],-1);
+  assert.equal(audioContexts[0].lastSource.started,true);
+  socket.receive({type:'interrupted'});
+  assert.equal(audioContexts[0].lastSource.stopped,true,'Model interruption cancels queued speech');
+  const fields={...scenario,posting_text:attack,deadline_at:new Date(Date.now()+3*3600000).toISOString(),hours_remaining:3};
+  const draft={type:'draft',draft_id:'draft-one',draft_version:2,fields,missing_fields:[],ready_for_review:true,deadline_changed:true};
+  socket.receive(draft);
+  assert.equal(nodes.get('voice-apply').disabled,false);
+  assert.equal(nodes.get('voice-draft').children[1].textContent,'Available surplus: '+attack);
+  socket.receive({...draft,draft_version:1,fields:{...fields,posting_text:'stale offer'}});
+  socket.receive({...draft,draft_id:'another-draft',draft_version:3,fields:{...fields,posting_text:'wrong session'}});
+  assert.equal(nodes.get('voice-draft').children[1].textContent,'Available surplus: '+attack,'Older versions and foreign draft IDs must not replace the current draft');
+  socket.receive({type:'transcript',role:'model',text:attack,final:true});
+  assert.equal(nodes.get('voice-transcript').children[0].textContent,'Intake agent: '+attack);
+  socket.receive('null'); // malformed but valid JSON must not break the session.
+  const lateMessage=socket.onmessage;
+  context.applyVoiceDraft();
+  assert.equal(socket.closed,true);
+  assert(streams.every(stream=>stream.track.stopped),'Applying must release every microphone track');
+  assert(audioContexts.every(ctx=>ctx.state==='closed'),'Applying must close input and output audio contexts');
+  assert(worklets.every(worklet=>worklet.disconnected),'Applying must disconnect the worklet');
+  assert(revoked.includes('blob:worklet-test'));
+  assert.equal(timers.size,0,'Applying cancels session timers');
+  assert(calls.every(url=>url==='/api/live/config'),'Voice Start, draft and Apply must not call the matching API');
+  let request=context.buildRequest();
+  assert.equal(request.deadline_at,fields.deadline_at,'Apply must preserve the exact server deadline string');
+  assert.equal(request.posting_text,attack);
+  nodes.get('input-text').value='Reviewed bread offer with updated packaging';
+  context.offerChanged();
+  request=context.buildRequest();
+  assert.equal(request.deadline_at,fields.deadline_at,'Non-clock edits must not restart an applied voice deadline');
+  lateMessage({data:JSON.stringify({...draft,draft_version:4,fields:{...fields,posting_text:'late stale update'}})});
+  assert.equal(nodes.get('input-text').value,'Reviewed bread offer with updated packaging','Closed-session events cannot change the form');
+  const posted=[];
+  context.fetch=async(url,options)=>{posted.push({url,body:JSON.parse(options.body)});return {ok:true,json:async()=>({status:'no_match'})};};
+  await context.runMatching();
+  assert.equal(posted.length,1);
+  assert.equal(posted[0].body.deadline_at,fields.deadline_at,'Only the explicit match action posts the reviewed fixed deadline');
+  nodes.get('input-hours').value=2;
+  context.offerChanged('hours');
+  assert.notEqual(context.buildRequest().deadline_at,fields.deadline_at,'An explicit hours edit replaces the voice clock');
+
+  nodes.get('voice-text').value='Only one pallet is available.';
+  const sendText=context.sendVoiceText();
+  await tick();
+  const textSocket=sockets.at(-1);
+  textSocket.receive({type:'ready'});
+  await sendText;
+  assert.equal(micRequests,1,'An explicit typed Send starts its session without microphone access');
+  assert.equal(JSON.parse(textSocket.sent.at(-1)).type,'text');
+  textSocket.receive({...draft,draft_id:'text-draft',draft_version:1,fields:{...fields,deadline_at:'2020-01-01T10:00:00Z'}});
+  assert.equal(nodes.get('voice-apply').disabled,true,'Expired drafts are not applicable');
+  const beforeInvalid=nodes.get('input-text').value;
+  context.applyVoiceDraft();
+  assert.equal(nodes.get('input-text').value,beforeInvalid);
+  textSocket.receive({...draft,draft_id:'text-draft',draft_version:2,fields:{...fields,pallet_count:'1'}});
+  assert.equal(nodes.get('voice-apply').disabled,true,'Numeric strings must not bypass validation');
+  context.offerChanged();
+  assert.equal(textSocket.closed,true,'Editing the form ends a session whose context is now stale');
+
+  let resolvePermission;
+  context.navigator.mediaDevices.getUserMedia=()=>{micRequests++;return new Promise(resolve=>{resolvePermission=resolve;});};
+  const pending=context.startVoiceSession(true);
+  await tick();
+  sockets.at(-1).receive({type:'ready'});
+  await tick();
+  assert.equal(typeof resolvePermission,'function');
+  context.stopVoiceSession();
+  const lateStream=createStream();
+  resolvePermission(lateStream);
+  await pending;
+  assert.equal(lateStream.track.stopped,true,'Stop during a permission prompt must stop any subsequently granted stream');
+  assert.equal(timers.size,0);
+
+  context.navigator.mediaDevices.getUserMedia=async()=>{throw new Error('Permission denied');};
+  const denied=context.startVoiceSession(true);
+  await tick(); sockets.at(-1).receive({type:'ready'}); await denied;
+  assert.equal(sockets.at(-1).closed,true);
+  assert.match(nodes.get('voice-status').textContent,/typed note/);
+  assert.equal(nodes.get('voice-send').disabled,false,'Permission failure leaves explicit typed fallback available');
+  const errorSocket=await readySession(false);
+  errorSocket.onerror();
+  assert.equal(errorSocket.closed,true);
+  assert.equal(nodes.get('voice-start').disabled,false,'Transport failure permits an explicit retry');
+  assert(audioContexts.every(ctx=>ctx.state==='closed'));
+  assert.equal(timers.size,0);
+
+  // Execute the exact embedded worklet at real device rates without a browser or microphone.
+  const workletCode=vm.runInContext('voiceWorkletSource',context);
+  for (const rate of [16000,44100,48000]) {
+    const frames=[];let Processor;
+    const audioVM=vm.createContext({Float32Array,Int16Array,Math,sampleRate:rate,
+      AudioWorkletProcessor:class {constructor(){this.port={postMessage:buffer=>frames.push(new Int16Array(buffer))};}},
+      registerProcessor:(_,type)=>{Processor=type;}});
+    vm.runInContext(workletCode,audioVM);
+    const processor=new Processor();
+    const count=Math.round(rate*0.12);
+    for(let offset=0;offset<count;offset+=128) processor.process([[new Float32Array(Math.min(128,count-offset)).fill(0.5)]]);
+    assert(Math.abs(frames.length*320+processor.count-1920)<=1,'120 ms resamples to 1,920 samples within one retained interpolation sample');
+    assert(frames.every(frame=>frame.length===320 && frame.every(sample=>sample===16384)),`Valid 16 kHz PCM at device rate ${rate}`);
+  }
+  console.log('Voice intake: feature gate, explicit permission, text fallback, safe versioned drafts, no auto-match, exact deadline, PCM resampling and race-safe cleanup passed.');
+}
+testRescueWorkflow().then(testVoiceIntake).catch(error=>{console.error(error);process.exitCode=1;});
