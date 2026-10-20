@@ -123,6 +123,19 @@ def test_offer_workflow_asset_is_served_and_parses_without_broker(client):
     broker.broker_posting_async.assert_not_called()
 
 
+@pytest.mark.parametrize("asset,content_type", [("workspace.js", "javascript"), ("workspace.css", "text/css")])
+def test_workspace_assets_are_served_without_broker(client, asset, content_type):
+    http, broker = client
+    assert f'/ui/{asset}' in http.get('/').text
+    response = http.get(f'/ui/{asset}')
+    assert response.status_code == 200
+    assert content_type in response.headers["content-type"]
+    if asset.endswith(".js"):
+        checked = subprocess.run(["node", "--check"], input=response.text, text=True, capture_output=True)
+        assert checked.returncode == 0, checked.stderr
+    broker.broker_posting_async.assert_not_called()
+
+
 @pytest.mark.parametrize('endpoint', ['/api/match', '/api/match/stream'])
 @pytest.mark.parametrize('field,value', [
     ('pallet_count', -1), ('pallet_count', 0), ('hours_remaining', 0), ('hours_remaining', -1),

@@ -1,0 +1,108 @@
+const assert=require('node:assert/strict');
+const fs=require('node:fs');
+const path=require('node:path');
+const vm=require('node:vm');
+const {context,explorer,setPayloads,filters,node,content,city,match,fixedRequest}=require('./test_recipient_explorer.js');
+context.TextEncoder=TextEncoder;
+const timers=new Map();let nextTimer=0;
+context.setTimeout=(fn,ms)=>{timers.set(++nextTimer,{fn,ms});return nextTimer;};
+context.clearTimeout=key=>timers.delete(key);
+const view=vm.runInContext('ViewContext',context), receipts=vm.runInContext('ViewActionReceipts',context);
+const now=Date.now(),deadline=new Date(now+3600000).toISOString();
+const sources=[{source_id:'city:recipients',source_kind:'city_recipients',status:'ready',provenance:'unknown',
+  fetched_at:new Date(now).toISOString(),expires_at:new Date(now+300000).toISOString(),cache_state:'fresh',
+  coverage:{returned:3,matching_source_rows:3,row_cap:100,truncated:false,skipped_invalid_or_duplicate:0}}];
+const currentMatch={...match,donor:{...match.donor,deadline_at:deadline},winner:{...match.winner,deadline_at:deadline},evaluated_at:new Date(now).toISOString()};
+context.applyScenario({...fixedRequest,hours_remaining:6});
+filters();setPayloads({...city,sources},currentMatch);view.changed('result');
+explorer.select('1');
+let snapshot=view.snapshot();
+assert.equal(snapshot.schema_version,1);
+assert.equal(snapshot.evaluated_offer_revision,snapshot.offer_revision);
+assert.equal(snapshot.selected_recipient_id,'1');
+assert.equal(snapshot.result.winner_id,'1');
+assert.deepEqual(Array.from(snapshot.result.alternative_ids),['5']);
+assert.equal(snapshot.result.deadline_at,deadline);
+assert(snapshot.sources.every(state=>state.operational_confirmed_at===null&&state.source_observed_at===null));
+assert.match(content(node('recipient-detail-content')),/operations unconfirmed/);
+const unchanged=JSON.stringify(snapshot),offerBefore=JSON.stringify(context.buildRequest());
+for(let i=0;i<5;i++)assert.equal(JSON.stringify(view.snapshot()),unchanged,'Reading view state is pure');
+assert.equal(JSON.stringify(context.buildRequest()),offerBefore,'A read does not change the offer or its deadline');
+filters('Tacoma','rejected');context.viewFiltersChanged();
+snapshot=view.snapshot();
+assert.deepEqual(Array.from(snapshot.visible_recipient_ids),['2']);
+assert.equal(snapshot.filters.search,'Tacoma');
+assert.equal(snapshot.filters.outcome,'rejected');
+assert(snapshot.view_revision>JSON.parse(unchanged).view_revision);
+filters();context.viewFiltersChanged();
+
+const owner=()=>{const value=view.snapshot();return {turn_id:'turn-test',expected_offer_revision:value.offer_revision,expected_view_revision:value.view_revision};};
+let ownership=owner();
+assert.equal(receipts.begin(ownership),true);
+const read={type:'action_result',...ownership,call_id:'read-1',outcome:'applied',effect:'read_only',
+  resulting_revision:ownership.expected_view_revision,payload:{authority:'untrusted_browser_projection',reported_alternatives:[{name:'<script>unsafe</script>'}]}};
+assert.equal(receipts.accept(read),true);
+assert.match(content(node('voice-action-receipt')),/No new matching, data fetch or navigation occurred/);
+assert.match(content(node('voice-action-receipt')),/<script>unsafe<\/script>/);
+assert.equal(receipts.accept(read),false,'Duplicate call IDs have one effect');
+assert(receipts.accept({...read,call_id:'read-long',payload:{authority:'untrusted_browser_projection',reported_result:{note:'x'.repeat(18000)}}}));
+assert.match(content(node('voice-action-receipt')),/display excerpt was shortened/);
+assert.equal(JSON.stringify(context.buildRequest()),offerBefore);
+const previousSelection=explorer.selectedId();
+assert.equal(explorer.selectedId(),previousSelection,'Read receipts never navigate profiles');
+view.changed();
+assert.match(content(node('voice-action-receipt')),/workspace changed.*Ask again/,'Completed evidence is cleared as soon as its view changes');
+assert.doesNotMatch(content(node('voice-action-receipt')),/display excerpt was shortened/,'Prior-view evidence cannot remain visible');
+assert.equal(receipts.accept({...read,call_id:'stale-1'}),false);
+assert.match(content(node('voice-action-receipt')),/stale/);
+receipts.reset();
+ownership=owner();assert(receipts.begin(ownership));
+vm.runInContext("voice.draftId=null; voice.draftVersion=-1;",context);
+const draft={type:'draft',draft_id:'context-review',draft_version:1,ready_for_review:true,missing_fields:[],
+  fields:{...fixedRequest,donor_name:'Draft only',pallet_count:2,hours_remaining:1,deadline_at:deadline}};
+const proposal={...ownership,call_id:'draft-1',outcome:'applied',effect:'draft_proposed',resulting_revision:1,payload:{draft}};
+assert(receipts.accept(proposal));
+assert.equal(node('input-donor').value,JSON.parse(offerBefore).donor_name,'A successful proposal is not an applied form edit');
+assert.match(content(node('voice-action-receipt')),/form and match have not changed/);
+assert.equal(receipts.accept({...proposal,call_id:'older-draft'}),false,'A new call cannot reapply an old draft revision');
+assert(receipts.accept({...ownership,call_id:'refused-patch',outcome:'refused',effect:'none',message:'Two crates is not a pallet quantity.'}));
+assert.match(content(node('voice-action-receipt')),/Action refused.*Two crates/);
+assert.equal(node('input-pallets').value,JSON.parse(offerBefore).pallet_count);
+assert(receipts.finish(ownership));
+assert.equal(receipts.accept({...read,call_id:'late-after-turn'}),false);
+receipts.reset();
+context.offerChanged();
+snapshot=view.snapshot();
+assert.equal(snapshot.result.status,'none');
+assert.equal(snapshot.evaluated_offer_revision,null);
+assert.equal(snapshot.result.candidates.length,1,'The selected city profile remains available after an offer edit');
+assert.equal(snapshot.result.candidates[0].constraint_status,'not_evaluated');
+assert.equal(snapshot.result.candidates[0].composite_score,null);
+assert.equal(snapshot.result.winner_id,null);
+
+// Large and adversarial display rows stay bounded, with explicit truncation.
+const many=Array.from({length:80},(_,i)=>({...city.recipients[0],recipient_id:String(i+10),name:'食'.repeat(1000),
+  constraint_status:'rejected',elimination_reasons:Array(12).fill('食'.repeat(600)),confirmations_required:Array(16).fill('check')}));
+setPayloads({...city,recipients:many,sources},{status:'no_viable_match',eliminated_decoys:many,donor:{deadline_at:deadline}});
+view.changed('result');filters();
+snapshot=view.snapshot();
+assert.equal(snapshot.visible_recipient_ids.length,50);
+assert.equal(snapshot.visible_count,80);
+assert.equal(snapshot.truncated,true);
+assert(snapshot.result.candidates.length<=16);
+assert.equal(snapshot.result.candidates_truncated,true);
+const matchSource=snapshot.sources.find(state=>state.source_kind==='match_result');
+assert.equal(matchSource.status,'partial');
+assert.equal(matchSource.coverage.truncated,true);
+assert.equal(matchSource.coverage.returned,snapshot.result.candidates.length);
+assert(new TextEncoder().encode(JSON.stringify(snapshot)).byteLength<=48000);
+assert(snapshot.result.candidates.some(row=>row.confirmations_required.some(message=>/shortened/.test(message))));
+assert(snapshot.result.candidates.every(row=>row.composite_score===null),'Rejected hits have no projected eligible ranking');
+
+const staleSources=sources.map(state=>({...state,expires_at:new Date(now-1000).toISOString()}));
+setPayloads({...city,sources:staleSources},null);view.changed('clear_result');
+assert.equal(view.snapshot().sources[0].status,'stale');
+assert.match(content(node('source-state-summary')),/stale/);
+view.dispose();
+assert.equal(timers.size,0);
+console.log('View context: pure bounded projection, exact clock, source parity, no-fetch reads, owned receipts, stale/duplicate refusal and draft-only effects passed.');
