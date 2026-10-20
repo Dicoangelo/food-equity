@@ -4,6 +4,14 @@ const fs = require('node:fs');
 const vm = require('node:vm');
 const source = fs.readFileSync(require('node:path').join(__dirname, '../agent/api.py'), 'utf8');
 const script = source.split('  <!-- Leaflet & App JS -->')[1].split('<script>')[1].split('</script>')[0];
+const markup = source.split('<body id="rescue-app">')[1].split('  <!-- Leaflet & App JS -->')[0];
+const markupIds = [...markup.matchAll(/\bid="([^"]+)"/g)].map(match=>match[1]);
+assert.equal(new Set(markupIds).size,markupIds.length,'Each interactive target needs a unique HTML id');
+for (const [,target] of markup.matchAll(/\bhref="#([^"]+)"/g)) {
+  assert(markupIds.includes(target),`Workspace navigation must reach an existing section: ${target}`);
+}
+assert.match(markup,/<aside[^>]*aria-label="Coordinator workspace"/);
+assert.match(markup,/<a href="#offer-panel" class="skip-link">/);
 class Element {
   constructor(tag) {
     this.tagName=tag; this.children=[]; this.value=''; this.textContent=''; this.className='';
