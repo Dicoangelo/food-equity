@@ -512,7 +512,7 @@ html { min-width: 320px; scroll-padding-top: 120px; }
 
 /* Map presentation. Recipient list/detail mechanics live in recipient-explorer.css. */
 #map-panel { min-width: 0; padding: 18px; gap: 12px; }
-#map { width: 100%; height: 420px; border: 1px solid var(--line); border-radius: 12px; }
+#map { position: relative; z-index: 0; isolation: isolate; width: 100%; height: 420px; border: 1px solid var(--line); border-radius: 12px; }
 .map-toolbar { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 8px; }
 .map-toolbar .action-secondary, #rescue-app .map-options > summary { font-size: 12px; }
 .map-options { flex: 1 1 160px; }
