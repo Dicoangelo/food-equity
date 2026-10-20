@@ -5,6 +5,7 @@ import json
 import subprocess
 import sys
 from datetime import datetime, timedelta, timezone
+from html.parser import HTMLParser
 from pathlib import Path
 from unittest.mock import AsyncMock
 
@@ -55,6 +56,41 @@ def test_served_inline_javascript_parses(client):
     script = html.split('  <!-- Leaflet & App JS -->')[1].split('<script>')[1].split('</script>')[0]
     checked = subprocess.run(['node', '--check'], input=script, text=True, capture_output=True)
     assert checked.returncode == 0, checked.stderr
+    broker.broker_posting_async.assert_not_called()
+
+
+def test_working_map_and_progress_share_the_results_column(client):
+    """Optional tools in the offer column must not push the map into a lower grid row."""
+    class Structure(HTMLParser):
+        def __init__(self):
+            super().__init__()
+            self.stack = []
+            self.elements = {}
+
+        def handle_starttag(self, tag, pairs):
+            attrs = dict(pairs)
+            if attrs.get('id'):
+                self.elements[attrs['id']] = (attrs, list(self.stack))
+            if tag not in {'area', 'base', 'br', 'col', 'embed', 'hr', 'img', 'input', 'link', 'meta', 'param', 'source', 'track', 'wbr'}:
+                self.stack.append((tag, attrs))
+
+        def handle_endtag(self, tag):
+            for index in range(len(self.stack) - 1, -1, -1):
+                if self.stack[index][0] == tag:
+                    self.stack = self.stack[:index]
+                    break
+
+    http, broker = client
+    document = Structure()
+    document.feed(http.get('/').text)
+    for identifier in ('map-panel', 'review-panel', 'brief-container'):
+        attrs, parents = document.elements[identifier]
+        assert any('results-column' in parent.get('class', '').split() for _, parent in parents)
+        assert not any('offer-column' in parent.get('class', '').split() for _, parent in parents)
+    for identifier in ('btn-cancel-match', 'progress-history', 'review-clock'):
+        assert any(parent.get('id') == 'review-panel' for _, parent in document.elements[identifier][1])
+    assert document.elements['review-panel'][0]['tabindex'] == '-1'
+    assert '/api/recipients/{recipient_id}/evidence' in http.get('/openapi.json').json()['paths']
     broker.broker_posting_async.assert_not_called()
 
 
