@@ -3,6 +3,7 @@ import importlib.util
 import json
 import logging
 from pathlib import Path
+from types import SimpleNamespace
 from uuid import UUID
 
 import pytest
@@ -102,3 +103,99 @@ def test_telemetry_handler_writes_json_only_to_stdout():
                                '{"event":"http_request"}', (), None)
     assert json.loads(handler.format(record)) == {"event":"http_request"}
     assert "--no-access-log" in (Path(__file__).parents[1] / "scripts/serve.py").read_text()
+
+
+@pytest.mark.asyncio
+async def test_pure_asgi_preserves_body_and_headers_without_rewrapping(http, monkeypatch, caplog):
+    clock = [10.0]
+    monkeypatch.setattr(api.time, "perf_counter", lambda: clock[0])
+    request_id = "1a2b3c4d-1234-5678-90ab-123456789abc"
+    request_body = {"type": "http.request", "body": b"BODY_SECRET", "more_body": False}
+    sent = []
+
+    async def receive():
+        return request_body
+
+    async def send(message):
+        sent.append(message)
+
+    async def application(scope, inner_receive, inner_send):
+        assert await inner_receive() is request_body
+        clock[0] = 10.025
+        await inner_send({"type": "http.response.start", "status": 200, "headers": [
+            (b"x-request-id", b"INNER_SECRET"),
+            (b"x-request-id", b"DUPLICATE_SECRET"),
+            (b"cache-control", b"no-store"),
+        ]})
+        assert request_logs(caplog) == []
+        await inner_send({"type": "http.response.body", "body": b"first", "more_body": True})
+        clock[0] = 99.0
+        await inner_send({"type": "http.response.body", "body": b"last", "more_body": False})
+
+    scope = {
+        "type": "http", "method": "POST", "path": "/raw/PATH_SECRET",
+        "query_string": b"QUERY_SECRET",
+        "headers": [(b"x-request-id", request_id.encode())],
+        "route": SimpleNamespace(path="/safe/{item}"),
+    }
+    await api.RequestTelemetryMiddleware(application)(scope, receive, send)
+    assert [event["type"] for event in sent] == [
+        "http.response.start", "http.response.body", "http.response.body",
+    ]
+    assert [value for key, value in sent[0]["headers"] if key == b"x-request-id"] == [
+        request_id.encode(),
+    ]
+    assert dict(sent[0]["headers"])[b"cache-control"] == b"no-store"
+    assert [event["body"] for event in sent[1:]] == [b"first", b"last"]
+    event, = request_logs(caplog)
+    assert event["duration_ms"] == 25
+    assert event["path"] == "/safe/{item}"
+    assert "SECRET" not in json.dumps(event)
+
+
+@pytest.mark.asyncio
+async def test_websocket_scope_and_transport_are_passed_through_without_logs(http, caplog):
+    scope = {"type": "websocket", "headers": [(b"authorization", b"HEADER_SECRET")]}
+    sent = []
+
+    async def receive():
+        return {"type": "websocket.connect"}
+
+    async def send(message):
+        sent.append(message)
+
+    async def application(inner_scope, inner_receive, inner_send):
+        assert inner_scope is scope
+        assert inner_receive is receive
+        assert inner_send is send
+        assert await inner_receive() == {"type": "websocket.connect"}
+        await inner_send({"type": "websocket.close", "code": 1000})
+
+    await api.RequestTelemetryMiddleware(application)(scope, receive, send)
+    assert sent == [{"type": "websocket.close", "code": 1000}]
+    assert request_logs(caplog) == []
+
+
+@pytest.mark.asyncio
+async def test_failure_after_headers_never_attempts_second_response(http, caplog):
+    sent = []
+
+    async def receive():
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    async def send(message):
+        sent.append(message)
+
+    async def application(scope, inner_receive, inner_send):
+        await inner_send({"type": "http.response.start", "status": 200, "headers": []})
+        raise RuntimeError("SECRET response failure")
+
+    scope = {"type": "http", "method": "GET", "headers": []}
+    with pytest.raises(RuntimeError, match="SECRET response failure"):
+        await api.RequestTelemetryMiddleware(application)(scope, receive, send)
+    assert len(sent) == 1
+    assert sent[0]["type"] == "http.response.start"
+    event, = request_logs(caplog)
+    assert event["status"] == 200
+    assert event["severity"] == "ERROR"
+    assert "SECRET" not in json.dumps(event)

@@ -3,6 +3,7 @@ Seattle Food Equity & Surplus Broker - FastAPI Server & Interactive UI
 Exposes REST API endpoints for team integration and serves an interactive Map Dashboard.
 """
 
+import asyncio
 import os
 import logging
 import json
@@ -14,10 +15,12 @@ from datetime import datetime, timezone
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal, Optional
-from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, ConfigDict, Field, field_validator
+from starlette.datastructures import Headers, MutableHeaders
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 
 logging.basicConfig(level=logging.INFO)
@@ -49,38 +52,84 @@ app = FastAPI(
 )
 
 
-@app.middleware("http")
-async def request_telemetry(request: Request, call_next):
-    supplied_id = request.headers.get("x-request-id", "")
-    request_id = supplied_id.lower() if re.fullmatch(
-        r"[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}", supplied_id
-    ) else str(uuid4())
-    started = time.perf_counter()
-    try:
-        response = await call_next(request)
-    except Exception:
-        # Never serialize exception text, request content or credentials into logs.
-        response = JSONResponse(status_code=500, content={
-            "status": "error", "message": "The request could not complete. Retry and share the request ID with the team.",
-            "request_id": request_id,
-        })
-    response.headers["X-Request-ID"] = request_id
-    route = request.scope.get("route")
-    metadata = release_info()
-    request_logger.info(json.dumps({
-        "severity": "ERROR" if response.status_code >= 500 else "INFO",
-        "event": "http_request",
-        "method": request.method if request.method in {"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"} else "OTHER",
-        # A known route template cannot contain user-supplied path/query data.
-        "path": getattr(route, "path", "<unmatched>"),
-        "status": response.status_code,
-        "duration_ms": round((time.perf_counter() - started) * 1000, 3),
-        "request_id": request_id,
-        "revision": metadata["revision"],
-        "commit_sha": metadata["commit_sha"],
-        "service": metadata["service"],
-    }, separators=(",", ":")))
-    return response
+class RequestTelemetryMiddleware:
+    """Observe HTTP traffic without replacing its streaming response lifecycle."""
+
+    def __init__(self, app: ASGIApp):
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        supplied_id = Headers(scope=scope).get("x-request-id", "")
+        request_id = supplied_id.lower() if re.fullmatch(
+            r"[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}", supplied_id
+        ) else str(uuid4())
+        started = time.perf_counter()
+        response_started = False
+        disconnected = False
+        status = None
+        headers_duration_ms = None
+        failed = False
+
+        async def observed_receive() -> Message:
+            nonlocal disconnected
+            message = await receive()
+            if message["type"] == "http.disconnect":
+                disconnected = True
+            return message
+
+        async def observed_send(message: Message) -> None:
+            nonlocal response_started, disconnected, status, headers_duration_ms
+            if message["type"] == "http.response.start":
+                response_started = True
+                status = message["status"]
+                headers_duration_ms = round((time.perf_counter() - started) * 1000, 3)
+                message = {**message, "headers": list(message.get("headers", []))}
+                MutableHeaders(scope=message)["X-Request-ID"] = request_id
+            try:
+                await send(message)
+            except OSError:
+                disconnected = True
+                raise
+        try:
+            await self.app(scope, observed_receive, observed_send)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            failed = True
+            if response_started or disconnected:
+                # A started response cannot become a second JSON response.
+                # Preserve transport errors so the response can close its work.
+                raise
+            # Never serialize exception text, request content or credentials.
+            response = JSONResponse(status_code=500, content={
+                "status": "error", "message": "The request could not complete. Retry and share the request ID with the team.",
+                "request_id": request_id,
+            })
+            await response(scope, observed_receive, observed_send)
+        finally:
+            route = scope.get("route")
+            metadata = release_info()
+            method = scope.get("method")
+            request_logger.info(json.dumps({
+                "severity": "ERROR" if (failed and not disconnected) or (status is not None and status >= 500) else "INFO",
+                "event": "http_request",
+                "method": method if method in {"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"} else "OTHER",
+                # A known route template cannot contain request path/query data.
+                "path": getattr(route, "path", "<unmatched>"),
+                "status": status,
+                "duration_ms": headers_duration_ms if headers_duration_ms is not None else round((time.perf_counter() - started) * 1000, 3),
+                "request_id": request_id,
+                "revision": metadata["revision"],
+                "commit_sha": metadata["commit_sha"],
+                "service": metadata["service"],
+            }, separators=(",", ":")))
+
+
+app.add_middleware(RequestTelemetryMiddleware)
 
 
 try:

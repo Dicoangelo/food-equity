@@ -297,6 +297,86 @@ async def test_stream_endpoint_cancels_broker_when_response_send_disconnects(cli
         await response.body_iterator.aclose()
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize('asgi_spec', ['2.3', '2.4'])
+async def test_full_app_stream_disconnect_cancels_broker_through_telemetry(client, asgi_spec):
+    """Use the complete ASGI/middleware stack and a real JSON request body."""
+    _, broker = client
+    cancelled = asyncio.Event()
+    sending_progress = asyncio.Event()
+    runner_task = None
+    received_request = False
+    response_start = None
+    payload = json.dumps(offer()).encode()
+    request_id = '77da1646-cfcb-4fe6-83fc-050da5c660ad'
+
+    async def execute(**arguments):
+        nonlocal runner_task
+        runner_task = asyncio.current_task()
+        try:
+            await arguments['progress_callback']('retrieving', {})
+            await asyncio.Event().wait()
+        finally:
+            cancelled.set()
+
+    broker.broker_posting_async.side_effect = execute
+
+    async def receive():
+        nonlocal received_request
+        if not received_request:
+            received_request = True
+            return {'type': 'http.request', 'body': payload, 'more_body': False}
+        await sending_progress.wait()
+        if asgi_spec == '2.3':
+            return {'type': 'http.disconnect'}
+        await asyncio.Event().wait()
+
+    async def send(message):
+        nonlocal response_start
+        if message['type'] == 'http.response.start':
+            response_start = message
+        if b'"stage":"retrieving"' in message.get('body', b''):
+            sending_progress.set()
+            if asgi_spec == '2.4':
+                raise OSError('simulated disconnected client')
+            # ASGI 2.3 signals the disconnect through receive while this send is
+            # still blocked. Cancellation must propagate through the middleware.
+            await asyncio.Event().wait()
+
+    scope = {
+        'type': 'http', 'asgi': {'version': '3.0', 'spec_version': asgi_spec},
+        'method': 'POST', 'path': '/api/match/stream',
+        'raw_path': b'/api/match/stream', 'root_path': '',
+        'scheme': 'http', 'query_string': b'', 'http_version': '1.1',
+        'headers': [
+            (b'content-type', b'application/json'),
+            (b'content-length', str(len(payload)).encode()),
+            (b'x-request-id', request_id.encode()),
+        ],
+        'client': ('127.0.0.1', 42000), 'server': ('testserver', 80),
+    }
+    try:
+        try:
+            await asyncio.wait_for(api.app(scope, receive, send), timeout=1.5)
+        except TimeoutError:
+            # TimeoutError is also an OSError; a forced timeout must not turn a
+            # stuck middleware response into a passing disconnect regression.
+            raise
+        except (OSError, ClientDisconnect):
+            pass
+        assert sending_progress.is_set()
+        assert response_start is not None
+        assert response_start['status'] == 200
+        assert dict(response_start['headers'])[b'x-request-id'] == request_id.encode()
+        await asyncio.wait_for(cancelled.wait(), timeout=0.2)
+        broker.broker_posting_async.assert_awaited_once()
+    finally:
+        # Keep a regression failure from leaking its intentionally stalled task.
+        if runner_task is not None and not runner_task.done():
+            runner_task.cancel()
+            await asyncio.wait({runner_task}, timeout=0.2)
+
+
 def test_stream_response_import_works_with_production_app_directory():
     """The production uvicorn command imports api directly from agent/, not as a package."""
     agent_directory = Path(__file__).parents[1] / 'agent'
