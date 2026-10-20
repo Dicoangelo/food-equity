@@ -943,3 +943,62 @@ async def test_idle_view_ack_explicitly_allows_same_epoch_after_completed_turn()
     assert started['provider_epoch']==1 and started['expected_view_revision']==1
     assert len(client.sessions)==1
     await ws.send({'type':'stop'});await asyncio.wait_for(task,1)
+
+
+class CancellationResistantCloseClient(FakeClient):
+    def __init__(self):
+        super().__init__()
+        self.cancel_seen=asyncio.Event()
+        self.release_close=asyncio.Event()
+    @asynccontextmanager
+    async def connect(self,**kwargs):
+        async with super().connect(**kwargs) as session:
+            try:
+                yield session
+            finally:
+                try:
+                    await asyncio.Event().wait()
+                except asyncio.CancelledError:
+                    self.cancel_seen.set()
+                    await self.release_close.wait()
+
+
+@pytest.mark.asyncio
+async def test_cancellation_resistant_provider_close_returns_but_stays_charged_to_capacity(monkeypatch):
+    monkeypatch.setattr(live,'PROVIDER_CLOSE_TIMEOUT_SECONDS',.02)
+    ws,client=FakeWebSocket(),CancellationResistantCloseClient()
+    task=asyncio.create_task(live.serve(ws,live.Settings(enabled=True),lambda _:client))
+    await next_output(ws)
+    await ws.send({'type':'text','text':'I have two pallets'});await next_output(ws)
+    await ws.send({'type':'text','text':'I have three pallets'})
+    assert (await next_output(ws))['type']=='recovering'
+    assert (await next_output(ws))['code']=='provider_cleanup_timeout'
+    await asyncio.wait_for(client.cancel_seen.wait(),1)
+    await asyncio.wait_for(task,1)
+    assert client.closed and ws.closed and len(client.sessions)==1
+    pending=list(live.PENDING_CLEANUP)
+    assert pending and not live.SessionSlots().acquire(1)
+    client.release_close.set()
+    await asyncio.wait_for(asyncio.gather(*pending),1)
+    await asyncio.sleep(0)
+    assert not live.PENDING_CLEANUP
+    assert live.SessionSlots().acquire(1)
+
+
+@pytest.mark.asyncio
+async def test_cancellation_resistant_terminal_io_returns_and_releases_quarantine_when_done(monkeypatch):
+    monkeypatch.setattr(live,'TERMINAL_IO_TIMEOUT_SECONDS',.01)
+    released, cancel_seen=asyncio.Event(),asyncio.Event()
+    async def stubborn():
+        try:await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            cancel_seen.set()
+            await released.wait()
+    await asyncio.wait_for(live.best_effort_terminal_io(stubborn()),.2)
+    await asyncio.wait_for(cancel_seen.wait(),.2)
+    assert live.PENDING_CLEANUP
+    pending=list(live.PENDING_CLEANUP)
+    released.set()
+    await asyncio.wait_for(asyncio.gather(*pending),.2)
+    await asyncio.sleep(0)
+    assert not live.PENDING_CLEANUP

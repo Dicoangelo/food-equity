@@ -34,6 +34,8 @@ PROVIDER_CONNECT_TIMEOUT_SECONDS = 10.0
 PROVIDER_CLOSE_TIMEOUT_SECONDS = 3.0
 MAX_RECOVERIES = 3
 MAX_PENDING_EVENTS = 64
+WORKER_CANCEL_TIMEOUT_SECONDS = 1.0
+PENDING_CLEANUP: set[asyncio.Task] = set()
 REQUIRED = ("posting_text", "donor_name", "required_storage", "pallet_count",
             "donor_lat", "donor_lon", "deadline_at")
 
@@ -70,7 +72,7 @@ class SessionSlots:
 
     def acquire(self, maximum):
         with self.lock:
-            if self.active >= maximum:
+            if self.active + len(PENDING_CLEANUP) >= maximum:
                 return False
             self.active += 1
             return True
@@ -392,12 +394,57 @@ class ProtocolError(Exception):
     pass
 
 
-async def best_effort_terminal_io(operation):
-    """A non-reading peer must not retain a session slot during final notification."""
+def retain_cleanup(task):
+    """Quarantine cancellation-resistant work until it actually finishes.
+
+    It still counts against process capacity: releasing a browser request cannot
+    authorize an unbounded series of replacement provider resources.
+    """
+    PENDING_CLEANUP.add(task)
+    def finished(done):
+        PENDING_CLEANUP.discard(done)
+        if not done.cancelled():
+            done.exception()  # Retrieve silently; never log provider/input details.
+    task.add_done_callback(finished)
+
+
+async def cancel_workers(workers):
+    workers = {task for task in workers if task is not None}
+    if not workers:
+        return
+    for task in workers:
+        task.cancel()
+    done, pending = await asyncio.wait(workers, timeout=WORKER_CANCEL_TIMEOUT_SECONDS)
+    for task in done:
+        if not task.cancelled():
+            task.exception()
+    for task in pending:
+        retain_cleanup(task)
+
+
+async def bounded_cleanup(operation, seconds):
+    # wait_for waits for cancellation acknowledgement, which a faulty transport
+    # can suppress. wait bounds our wait; retained work stays charged to capacity.
+    task = asyncio.ensure_future(operation)
     try:
-        await asyncio.wait_for(operation, timeout=TERMINAL_IO_TIMEOUT_SECONDS)
+        done, _ = await asyncio.wait({task}, timeout=seconds)
+    except asyncio.CancelledError:
+        task.cancel()
+        retain_cleanup(task)
+        raise
+    if not done:
+        task.cancel()
+        retain_cleanup(task)
+        await asyncio.sleep(0)  # Let cooperative cancellation finish without waiting for faulty I/O.
+        raise TimeoutError
+    return task.result()
+
+
+async def best_effort_terminal_io(operation):
+    """A non-reading peer must not retain the browser request indefinitely."""
+    try:
+        await bounded_cleanup(operation, TERMINAL_IO_TIMEOUT_SECONDS)
     except Exception:
-        # Cleanup has priority over delivering the final status/close frame.
         pass
 
 
@@ -415,12 +462,17 @@ async def serve(websocket, config, client_factory=create_client):
     client, reader, supervisor = None, None, None
     provider_context, provider, provider_reader, provider_close_task = None, None, None, None
     epoch, recoveries, calls = 1, 0, 0
+    terminated = False
     activity_id, last_activity_id, last_request_id = None, 0, 0
     events = asyncio.Queue(maxsize=MAX_PENDING_EVENTS)
     send_lock = asyncio.Lock()
 
     async def emit(payload):
+        if terminated and payload.get("type") != "error":
+            return
         async with send_lock:
+            if terminated and payload.get("type") != "error":
+                return
             try:
                 await websocket.send_json(payload)
             except (RuntimeError, WebSocketDisconnect):
@@ -432,8 +484,10 @@ async def serve(websocket, config, client_factory=create_client):
 
     async def read_browser():
         total_audio = 0
-        while True:
+        while not terminated:
             message = await asyncio.wait_for(websocket.receive(), config.idle_seconds)
+            if terminated:
+                return
             if message["type"] == "websocket.disconnect":
                 return
             binary = message.get("bytes")
@@ -463,9 +517,11 @@ async def serve(websocket, config, client_factory=create_client):
 
     async def read_provider(session, captured_epoch):
         try:
-            while True:
+            while not terminated:
                 received = False
                 async for event in session.receive():
+                    if terminated:
+                        return
                     received = True
                     await events.put(("provider", captured_epoch, event))
                 if not received:
@@ -479,16 +535,15 @@ async def serve(websocket, config, client_factory=create_client):
     async def stop_processing():
         # Cancel before terminal I/O: a backpressured error notification must not
         # leave a model/tool worker running beyond the original session budget.
-        running = [task for task in (reader, supervisor, provider_reader) if task]
-        for task in running:
-            task.cancel()
-        await asyncio.gather(*running, return_exceptions=True)
+        nonlocal terminated
+        terminated = True
+        actions.cancel()
+        await cancel_workers([reader, supervisor, provider_reader])
 
     async def close_provider():
         nonlocal provider_context, provider, provider_reader, provider_close_task
         if provider_reader:
-            provider_reader.cancel()
-            await asyncio.gather(provider_reader, return_exceptions=True)
+            await cancel_workers([provider_reader])
             provider_reader = None
         if provider_context and provider_close_task is None:
             context, provider_context, provider = provider_context, None, None
@@ -498,22 +553,31 @@ async def serve(websocket, config, client_factory=create_client):
             # reconnect, finally resumes waiting for the same close operation.
             closing = provider_close_task
             try:
-                await asyncio.wait_for(asyncio.shield(closing), PROVIDER_CLOSE_TIMEOUT_SECONDS)
-            except TimeoutError:
-                closing.cancel()
-                await asyncio.gather(closing, return_exceptions=True)
-                raise ProtocolError("provider_cleanup_timeout") from None
+                done, _ = await asyncio.wait({closing}, timeout=PROVIDER_CLOSE_TIMEOUT_SECONDS)
+                if not done:
+                    closing.cancel()
+                    retain_cleanup(closing)
+                    provider_close_task = None
+                    raise ProtocolError("provider_cleanup_timeout")
+                closing.result()
             finally:
                 if closing.done():
                     provider_close_task = None
 
     async def open_provider():
         nonlocal provider_context, provider, provider_reader
-        provider_context = client.aio.live.connect(model=config.model, config=connect_config())
+        context = client.aio.live.connect(model=config.model, config=connect_config())
+        provider_context = context
         try:
-            provider = await asyncio.wait_for(provider_context.__aenter__(), PROVIDER_CONNECT_TIMEOUT_SECONDS)
+            session = await asyncio.wait_for(context.__aenter__(), PROVIDER_CONNECT_TIMEOUT_SECONDS)
         except TimeoutError:
             raise ProtocolError("provider_connect_timeout") from None
+        if terminated:
+            # A faulty __aenter__ may acknowledge cancellation late. It must not
+            # resurrect a reader or abandon the now-open provider connection.
+            await best_effort_terminal_io(context.__aexit__(None, None, None))
+            raise asyncio.CancelledError
+        provider = session
         provider_reader = asyncio.create_task(read_provider(provider, epoch))
 
     async def recover(reason):
@@ -530,6 +594,8 @@ async def serve(websocket, config, client_factory=create_client):
         await emit({"type": "recovering", "reason": reason, "provider_epoch": epoch,
                     "retired_turn_id": retired, "recovery_count": recoveries})
         await close_provider()
+        if terminated:
+            raise asyncio.CancelledError
         await open_provider()
         await emit({"type": "resumed", "provider_epoch": epoch, "recovery_count": recoveries})
 
@@ -690,8 +756,10 @@ async def serve(websocket, config, client_factory=create_client):
         await emit({"type": "ready", "model": config.model, "location": config.location,
                     "provider_epoch": epoch, "max_recoveries": MAX_RECOVERIES, "audio_activity": True,
                     "input_correlation": True})
-        while True:
+        while not terminated:
             kind, captured, value = await events.get()
+            if terminated:
+                return
             if kind.startswith("provider") and captured != epoch:
                 continue
             if kind == "provider_closed":
@@ -749,7 +817,7 @@ async def serve(websocket, config, client_factory=create_client):
             pass
         if client:
             try:
-                await asyncio.wait_for(client.aio.aclose(), 3)
+                await bounded_cleanup(client.aio.aclose(), 3)
             except Exception:
                 pass
         await best_effort_terminal_io(websocket.close())
