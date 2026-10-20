@@ -31,5 +31,6 @@ assert.equal(source.normalize({...raw,error_code:'SECRET_RAW_ERROR'},Date.parse(
 assert.equal(source.cityStates({sources:Array(20).fill(raw)}).length,8);
 assert.equal(source.cityStates({status:'ready',recipients:[{}]}).length,0,'No invented source envelope for legacy data');
 assert.match(source.describe(stale),/stale.*operations unconfirmed/);
+assert.match(source.describe({...raw,source_kind:'match_result'}),/Evaluation validity ends at the donor deadline.*not a source observation timestamp/);
 assert.equal(raw.status,'ready','Normalization must not mutate its source input');
 console.log('Source state: exhaustive mixed states, expiry, provenance, bounded coverage and unknown observation/confirmation passed.');

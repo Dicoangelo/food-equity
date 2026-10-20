@@ -14,7 +14,8 @@ const cityRows = [
   {recipient_id:'2',name:'Community Kitchen',city:'Seattle',lat:47.64,lon:-122.30,cold_storage:'dry',frozen_storage:false,max_pallets:2,pickup_window_hours:2,service_days:'Daily',profile_source:'planted',geography_precision:'zip_centroid'},
   {recipient_id:'3',name:'North Pantry',city:'Shoreline',lat:47.72,lon:-122.34,cold_storage:null,frozen_storage:null,max_pallets:null,pickup_window_hours:null,service_days:null,profile_source:'generated',geography_precision:'zip_centroid'},
 ];
-const city = {status:'ready',as_of:'2026-10-20T17:30:00Z',recipients:cityRows,tracts:[
+const fetchedAt=new Date().toISOString(), expiresAt=new Date(Date.now()+300000).toISOString();
+const city = {sources:[{source_id:'city:recipients',source_kind:'city_recipients',status:'ready',provenance:'unknown',fetched_at:fetchedAt,expires_at:expiresAt,cache_state:'fresh',coverage:{returned:3,matching_source_rows:3,row_cap:100,truncated:false,skipped_invalid_or_duplicate:0}}],status:'ready',as_of:'2026-10-20T17:30:00Z',recipients:cityRows,tracts:[
   {tract_id:'53033000100',lat:47.61,lon:-122.32,poverty_rate:.2,no_vehicle_rate:.3,need_score:.25,population:1000},
 ],warnings:['Offline QA fixtures; no operational availability.'],provenance:{observation_date:null}};
 function evaluated(row, decision) {
@@ -31,9 +32,9 @@ const server = http.createServer((req,res) => {
   requests.push(req.url);
   const json = value => {res.setHeader('content-type','application/json');res.end(JSON.stringify(value));};
   if(req.url === '/') {res.setHeader('content-type','text/html');return res.end(html);}
-  if(req.url.startsWith('/ui/recipient-explorer.')) {
+  if(req.url.startsWith('/ui/')) {
     const name=req.url.slice('/ui/'.length);
-    if(!['recipient-explorer.js','recipient-explorer.css'].includes(name)) {res.writeHead(404);return res.end();}
+    if(!['recipient-explorer.js','recipient-explorer.css','source-state.js','view-context.js'].includes(name)) {res.writeHead(404);return res.end();}
     res.setHeader('content-type',name.endsWith('.js')?'text/javascript':'text/css');
     return res.end(fs.readFileSync(path.join(root,'agent/ui',name)));
   }
@@ -82,6 +83,8 @@ async function run() {
       await page.locator('#recipient-detail').waitFor({state:'visible'});
       assert.match(await page.locator('#recipient-detail-content').innerText(),/generated|Generated/);
       assert.match(await page.locator('#recipient-detail-content').innerText(),/Unknown/);
+      assert.match(await page.locator('#recipient-detail-content').innerText(),/Profile evidence: ready.*operations unconfirmed/s);
+      assert.match(await page.locator('#source-state-summary').innerText(),/Recipient dataset: ready/);
       assert.equal(matchCalls,countBefore,'Opening a profile must not request matching');
       await page.keyboard.press('Escape');
       await page.locator('#recipient-detail').waitFor({state:'hidden'});
@@ -138,8 +141,31 @@ async function run() {
       await page.locator('#recipient-list button').filter({hasText:'Community Kitchen'}).first().click();
       assert.equal(requests.filter(url=>url.startsWith('/api/')).length,apiCallsBefore,'Profile selection must reuse loaded data');
       await page.locator('#recipient-close').click();
+      const beforeRead=await page.evaluate(()=>buildRequest().deadline_at);
+      await page.evaluate(()=>{
+        const snapshot=ViewContext.snapshot();
+        const owner={turn_id:'browser-fixture',expected_offer_revision:snapshot.offer_revision,expected_view_revision:snapshot.view_revision};
+        ViewActionReceipts.begin(owner);
+        ViewActionReceipts.accept({type:'action_result',...owner,call_id:'fixture-read',
+          outcome:'applied',effect:'read_only',resulting_revision:snapshot.view_revision,
+          payload:{authority:'untrusted_browser_projection',reported_result:snapshot.result,sources:snapshot.sources}});
+        ViewActionReceipts.finish(owner);
+        document.getElementById('voice-panel').open=true;
+      });
+      const receipt=page.locator('#voice-action-receipt');
+      assert.match(await receipt.innerText(),/Reported winner: Harbor Pantry/);
+      assert.match(await receipt.innerText(),/availability unconfirmed/);
+      assert.match(await receipt.innerText(),/Confirm current capacity and recipient acceptance/);
+      assert.match(await receipt.innerText(),/Source status: partial/);
+      assert.equal(await receipt.locator('details').last().getAttribute('open'),null,'Technical JSON is optional, not the primary answer');
+      assert.equal(await page.evaluate(()=>buildRequest().deadline_at),beforeRead,'Evidence reads never extend the donor clock');
+      assert.equal(requests.filter(url=>url.startsWith('/api/')).length,apiCallsBefore,'Evidence reads reuse loaded data');
+      await receipt.scrollIntoViewIfNeeded();
+      assert(await receipt.evaluate(el=>el.scrollWidth<=el.clientWidth+1),'Evidence receipt fits the phone viewport');
+      if(output) await page.screenshot({path:path.join(output,`evidence-${width}.png`),fullPage:false});
       await page.locator('#input-pallets').fill('2');
       await page.locator('#input-pallets').dispatchEvent('input');
+      assert.equal(await page.evaluate(()=>buildRequest().deadline_at),beforeRead,'A quantity edit invalidates fit without extending the donor deadline');
       assert.match(await page.locator('#recipient-list').innerText(),/Not evaluated/i);
     }
     assert.deepEqual(errors,[],'Browser JS must not throw');

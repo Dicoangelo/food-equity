@@ -202,7 +202,8 @@ def test_expired_snapshot_cannot_be_applied():
 def test_tool_config_exposes_only_draft_function():
     config = live.connect_config()
     tools = config.tools[0].function_declarations
-    assert [t.name for t in tools] == ["draft_offer"]
+    assert [t.name for t in tools] == [
+        "draft_offer", "read_current_match", "read_recipient_evidence", "show_alternatives"]
     assert "donor_lat" not in tools[0].parameters_json_schema["properties"]
     assert config.response_modalities == ["AUDIO"]
 
@@ -281,19 +282,22 @@ async def test_transport_tool_draft_pcm_transcript_and_cleanup():
     context = complete_context()
     await ws.send({"type": "context", "fields": context})
     assert (await next_output(ws))["ready_for_review"]
+    assert (await next_output(ws))["context_only"]
     await ws.send({"type": "text", "text": "Actually two pallets of bread"})
+    started = await next_output(ws)
+    owner = {key: started[key] for key in live.Owner.model_fields}
     # Wait for actual upstream processing, not a timing guess.
     for _ in range(50):
-        if len(client.session.texts) == 2:
+        if len(client.session.texts) == 1:
             break
         await asyncio.sleep(.001)
     await client.session.events.put(types.LiveServerMessage(tool_call=types.LiveServerToolCall(
         function_calls=[types.FunctionCall(id="draft-1", name="draft_offer", args={
-            "pallet_count": 2, "evidence": "Actually two pallets of bread"})])))
+            "pallet_count": 2, "evidence": "Actually two pallets of bread", **owner})])))
     result = await next_output(ws)
-    assert result["type"] == "draft" and result["fields"]["pallet_count"] == 2
-    assert result["fields"]["donor_lat"] == context["donor_lat"]
-    await ws.incoming.put({"type": "websocket.receive", "bytes": b"\0\0" * 100})
+    assert result["type"] == "action_result" and result["effect"] == "draft_proposed"
+    assert result["payload"]["draft"]["fields"]["pallet_count"] == 2
+    assert result["payload"]["draft"]["fields"]["donor_lat"] == context["donor_lat"]
     await client.session.events.put(types.LiveServerMessage(server_content=types.LiveServerContent(
         output_transcription=types.Transcription(text="Please review the draft."),
         model_turn=types.Content(parts=[types.Part(inline_data=types.Blob(
@@ -302,6 +306,12 @@ async def test_transport_tool_draft_pcm_transcript_and_cleanup():
     assert (await next_output(ws))["type"] == "transcript"
     assert await next_output(ws) == b"\0\0" * 100
     assert (await next_output(ws))["type"] == "turn_complete"
+    await ws.incoming.put({"type": "websocket.receive", "bytes": b"\0\0" * 100})
+    assert (await next_output(ws))["type"] == "turn_started"
+    for _ in range(50):
+        if client.session.audio:
+            break
+        await asyncio.sleep(.001)
     await ws.send({"type": "stop"})
     await asyncio.wait_for(task, 1)
     assert client.closed and client.context_closed and ws.closed
@@ -318,18 +328,21 @@ async def test_transport_returns_specific_repair_then_accepts_sparse_patch():
     await next_output(ws)
     await ws.send({"type": "context", "fields": complete_context()})
     before = await next_output(ws)
+    assert (await next_output(ws))["context_only"]
     await ws.send({"type": "text", "text": "I have two pallets. Keep the existing pickup deadline."})
+    started = await next_output(ws)
+    owner = {key: started[key] for key in live.Owner.model_fields}
     for _ in range(50):
-        if len(client.session.texts) == 2:
+        if len(client.session.texts) == 1:
             break
         await asyncio.sleep(.001)
     async def tool(args, identity):
         await client.session.events.put(types.LiveServerMessage(tool_call=types.LiveServerToolCall(
-            function_calls=[types.FunctionCall(id=identity, name="draft_offer", args=args)])))
+            function_calls=[types.FunctionCall(id=identity, name="draft_offer", args={**args, **owner})])))
         return await next_output(ws)
     rejected = await tool({"pallet_count": 2, "hours_remaining": 6,
                            "evidence": "I have two pallets"}, "rejected")
-    assert rejected["type"] == "status"
+    assert rejected["type"] == "action_result" and rejected["outcome"] == "refused"
     assert rejected["code"] == "pickup_hours_not_explicit"
     assert rejected["field"] == "hours_remaining"
     for _ in range(50):
@@ -341,9 +354,9 @@ async def test_transport_returns_specific_repair_then_accepts_sparse_patch():
     assert response["code"] == rejected["code"]
     assert response["message"] == rejected["message"]
     repaired = await tool({"pallet_count": 2, "evidence": "I have two pallets"}, "repaired")
-    assert repaired["fields"]["pallet_count"] == 2
-    assert repaired["fields"]["deadline_at"] == before["fields"]["deadline_at"]
-    assert repaired["draft_version"] == before["draft_version"] + 1
+    assert repaired["payload"]["draft"]["fields"]["pallet_count"] == 2
+    assert repaired["payload"]["draft"]["fields"]["deadline_at"] == before["fields"]["deadline_at"]
+    assert repaired["payload"]["draft"]["draft_version"] == before["draft_version"] + 1
     await ws.send({"type": "stop"})
     await asyncio.wait_for(task, 1)
     assert client.closed and client.context_closed and ws.closed
@@ -442,3 +455,113 @@ async def test_rejected_connection_close_is_also_bounded(monkeypatch):
     monkeypatch.setattr(live, "create_client", lambda _: pytest.fail("No client for disabled route"))
     await asyncio.wait_for(live.live_intake(ws), 1)
     assert ws.close_cancelled and not ws.error_started.is_set()
+
+
+async def owned_session():
+    ws, client = FakeWebSocket(), FakeClient()
+    task = asyncio.create_task(live.serve(ws, live.Settings(enabled=True), lambda _: client))
+    assert (await next_output(ws))['type'] == 'ready'
+    await ws.send({'type':'context','fields':complete_context()})
+    before = await next_output(ws)
+    assert (await next_output(ws))['context_only']
+    await ws.send({'type':'text','text':'I have two pallets. Keep the pickup deadline unchanged.'})
+    started = await next_output(ws)
+    return ws,client,task,before,{k:started[k] for k in live.Owner.model_fields}
+
+
+def draft_event(owner, identity='owned-call', **content):
+    from google.genai import types
+    return types.LiveServerMessage(
+        server_content=types.LiveServerContent(**content) if content else None,
+        tool_call=types.LiveServerToolCall(function_calls=[types.FunctionCall(
+            id=identity,name='draft_offer',args={**owner,'pallet_count':2,'evidence':'I have two pallets'})]))
+
+
+@pytest.mark.asyncio
+async def test_interruption_and_tool_same_envelope_cancel_before_effect_or_audio():
+    from google.genai import types
+    ws,client,task,before,owner = await owned_session()
+    await client.session.events.put(draft_event(owner, interrupted=True,
+        output_transcription=types.Transcription(text='I applied the old change'),
+        model_turn=types.Content(parts=[types.Part(inline_data=types.Blob(data=b'\0\0',mime_type='audio/pcm;rate=24000'))])))
+    assert (await next_output(ws))['type'] == 'interrupted'
+    result = await next_output(ws)
+    assert result['type'] == 'action_result' and result['outcome'] == 'cancelled'
+    assert result['accepted'] is False and result['effect'] == 'none'
+    assert (await next_output(ws))['code'] == 'turn_interrupted'
+    await asyncio.wait_for(task,1)
+    assert ws.outgoing.empty()  # No false transcript, audio, or mutated draft after cancellation.
+    assert client.closed and client.context_closed and ws.closed
+
+
+@pytest.mark.asyncio
+async def test_view_change_cancels_pending_turn_and_late_provider_callback():
+    ws,client,task,before,owner = await owned_session()
+    await ws.send({'type':'view_context','context':{'schema_version':1,'offer_revision':0,'view_revision':1}})
+    assert (await next_output(ws))['status'] == 'accepted'
+    assert (await next_output(ws))['code'] == 'view_changed_restart'
+    await asyncio.wait_for(task,1)
+    await client.session.events.put(draft_event(owner))
+    assert ws.outgoing.empty() and not client.session.receiving
+    assert client.closed and client.context_closed
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("offer_revision", [0, 1])
+async def test_idle_view_update_cannot_rebind_a_captured_offer(offer_revision):
+    ws, client = FakeWebSocket(), FakeClient()
+    task = asyncio.create_task(live.serve(ws, live.Settings(enabled=True), lambda _: client))
+    await next_output(ws)
+    await ws.send({'type':'view_context','context':{'offer_revision':0,'view_revision':1}})
+    assert (await next_output(ws))['status']=='accepted'
+    await ws.send({'type':'context','fields':complete_context()})
+    captured = await next_output(ws)
+    assert captured['ready_for_review'] and (await next_output(ws))['context_only']
+    await ws.send({'type':'view_context','context':{
+        'offer_revision':offer_revision,'view_revision':2,'selected_recipient_id':'2'}})
+    assert (await next_output(ws))['status']=='accepted'
+    if offer_revision:
+        assert (await next_output(ws))['code']=='offer_changed_restart'
+    else:
+        await ws.send({'type':'stop'})
+    await asyncio.wait_for(task,1)
+    assert client.closed and client.context_closed and not client.session.texts
+    assert ws.outgoing.empty()
+
+
+@pytest.mark.asyncio
+async def test_duplicate_provider_call_has_one_ui_receipt_and_one_draft_increment():
+    from google.genai import types
+    ws,client,task,before,owner = await owned_session()
+    await client.session.events.put(draft_event(owner))
+    first = await next_output(ws)
+    assert first['payload']['draft']['draft_version'] == before['draft_version']+1
+    assert first['payload']['draft']['fields']['deadline_at'] == before['fields']['deadline_at']
+    await client.session.events.put(draft_event(owner))
+    await client.session.events.put(types.LiveServerMessage(server_content=types.LiveServerContent(turn_complete=True)))
+    assert (await next_output(ws))['type'] == 'turn_complete'  # No duplicate UI acknowledgement.
+    assert len(client.session.responses) == 2
+    assert client.session.responses[1]['function_responses'][0].response['replayed'] is True
+    await ws.send({'type':'stop'});await asyncio.wait_for(task,1)
+
+
+@pytest.mark.asyncio
+async def test_read_tools_return_context_only_and_do_not_touch_draft_or_external_provider():
+    from google.genai import types
+    from tests.test_view_context import view_fixture
+    ws,client = FakeWebSocket(),FakeClient()
+    task=asyncio.create_task(live.serve(ws,live.Settings(enabled=True),lambda _:client))
+    await next_output(ws)
+    await ws.send({'type':'view_context','context':view_fixture()})
+    assert (await next_output(ws))['status']=='accepted'
+    await ws.send({'type':'text','text':'Why was recipient 3 rejected? Can they accept food now?'})
+    started=await next_output(ws);owner={k:started[k] for k in live.Owner.model_fields}
+    await client.session.events.put(types.LiveServerMessage(tool_call=types.LiveServerToolCall(function_calls=[
+        types.FunctionCall(id='read-1',name='read_recipient_evidence',args={**owner,'recipient_id':'3'})])))
+    result=await next_output(ws)
+    assert result['effect']=='read_only'
+    assert result['payload']['reported_recipient']['constraint_status']=='rejected'
+    assert result['payload']['operational_availability']=='unconfirmed'
+    assert result['payload']['authority']=='untrusted_browser_projection'
+    assert not client.session.audio and len(client.session.texts)==1
+    await ws.send({'type':'stop'});await asyncio.wait_for(task,1)

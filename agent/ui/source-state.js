@@ -42,7 +42,8 @@ const SourceStateUI = (() => {
     const normalized = normalize(state), c = normalized.coverage;
     const label = {city_recipients:'Recipient dataset',census_tracts:'Census dataset',match_result:'Current match evidence',recipient_profile:'Profile evidence'}[normalized.source_kind];
     const countText = c.returned == null ? 'coverage unknown' : `${c.returned} rows${c.truncated ? ' · truncated' : ''}${c.skipped_invalid_or_duplicate ? ` · ${c.skipped_invalid_or_duplicate} invalid/duplicate rows skipped` : ''}`;
-    return `${label}: ${normalized.status} · ${countText} · fetched ${normalized.fetched_at || 'unknown'}. Source observation date unknown; operations unconfirmed.`;
+    const validity=normalized.source_kind==='match_result' ? ` Evaluation validity ends at the donor deadline: ${normalized.expires_at || 'unknown'}; this is not a source observation timestamp.` : '';
+    return `${label}: ${normalized.status} · ${countText} · fetched ${normalized.fetched_at || 'unknown'}. Source observation date unknown; operations unconfirmed.${validity}`;
   }
   function render(container, states) {
     if (!container) return;

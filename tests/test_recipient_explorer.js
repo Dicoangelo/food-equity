@@ -101,11 +101,13 @@ let mobile = false;
 const media = {get matches() { return mobile; }, addEventListener() {}, removeEventListener() {}};
 const context = vm.createContext({
   document, window: {matchMedia: () => media, addEventListener() {}},
-  console, Date, Number, JSON, navigator: {}, URL, URLSearchParams,
+  console, Date, Number, JSON, navigator: {}, URL, URLSearchParams, TextEncoder,
+  setTimeout:()=>1, clearTimeout:()=>{},
   requestAnimationFrame: fn => fn(),
   fetch() { throw new Error('Profile interactions must never make a network request'); },
 });
 vm.runInContext(script, context);
+for(const name of ['source-state','view-context']) vm.runInContext(fs.readFileSync(path.join(__dirname, `../agent/ui/${name}.js`), 'utf8'), context);
 vm.runInContext(fs.readFileSync(path.join(__dirname, '../agent/ui/recipient-explorer.js'), 'utf8'), context);
 const explorer = vm.runInContext('RecipientExplorer', context);
 function setPayloads(city, match) {
@@ -376,3 +378,6 @@ assert.equal(context.buildRequest().deadline_at, reviewedDeadline,
   'Refreshing the drawer must retain the exact reviewed voice deadline');
 explorer.close();
 console.log('Recipient explorer: identity merge, provenance, unknowns, eligible fit, filters, exact clock, safe directions, stale clearing and keyboard/mobile focus passed.');
+
+// Reuse the real DOM fixture in the bounded-context behavioral suite.
+module.exports={context,explorer,setPayloads,filters,node,content,city,match,fixedRequest};
