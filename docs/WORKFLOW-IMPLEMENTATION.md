@@ -5,10 +5,10 @@ This branch fixes the two reproduced decision bugs from the Google platform revi
 ## Integration state
 
 - Branch: `codex/coherent-offer` in the isolated `food-equity-workflow-lane` checkout.
-- Rebased onto `e48bd62`, including team main `90eb4cc` and the PR #13 candidate-tag/artifact fixes. The main checkout was not changed. The separate context-agent lane is excluded.
+- Rebased onto team main `6c080af`, including the merged PR #13 candidate-tag/artifact fixes. The main checkout was not changed. The separate context-agent lane is excluded.
 - Dico authorized integration and live release on 20 October. The main build chat remains the single release owner and has reserved merge/promotion until its first CI release is confirmed or it explicitly hands ownership over.
 - This slice contains strict schedule interpretation, the shared offer clock, real progress/cancellation and pure-ASGI telemetry compatibility. These belong together: the earlier telemetry wrapper prevents disconnect cleanup on one ASGI path.
-- CI runs all three Node suites. The exact-candidate verifier must exercise the browser's stream and same-origin script before promotion, alongside the existing JSON refusal, data and Live gates. This document is not a deployment receipt.
+- CI runs all three Node suites. The exact-candidate verifier exercises the browser's stream and checks the same-origin script against the archived source bytes before promotion, alongside the existing JSON refusal, data and Live gates. Bakery uses the streaming path and the capacity stress test keeps the JSON path, retaining two broker calls. This document is not a deployment receipt.
 
 ## User-visible behavior
 
@@ -32,8 +32,8 @@ The ADK/MCP/Gemini flow, deterministic gates, ranking and final deadline recheck
 
 ## Verification
 
-The full post-rebase Python suite passed: **328 tests**, with the existing Starlette/httpx deprecation and ADK experimental-schema warnings. The three offline Node suites passed: **41 tests/subtests**, including 39 dedicated clock/stream tests plus the UI and recipient-explorer suites. The optional Playwright fixture script was adapted for the new asset/transport and syntax-checked; it was not executed by this pass.
+The full post-rebase Python suite passed: **362 tests**, with the existing Starlette/httpx deprecation and ADK experimental-schema warnings. The three offline Node suites passed: **41 tests/subtests**, including 39 dedicated clock/stream tests plus the UI and recipient-explorer suites. The optional Playwright fixture script was adapted for the new asset/transport and syntax-checked; it was not executed by this pass.
 
-The local browser fixture used the actual FastAPI stream endpoint with a fake broker. Progress appeared before completion, Cancel restored the form, and server receipts recorded one canceled worker and one completed edited retry with identical absolute deadlines. No live model, microphone or cloud operation was called. Screenshots and receipts are in `../../research/google-platform-review/evidence/workflow/` relative to this checkout. The final browser check includes the telemetry integration. Full-app ASGI 2.3 and 2.4 disconnect tests also pass, alongside request-ID, body forwarding, privacy and WebSocket bypass checks.
+The local browser fixture used the actual FastAPI stream endpoint with a fake broker. Progress appeared before completion, Cancel restored the form, and server receipts recorded one canceled worker and one completed edited retry with identical absolute deadlines. No live model, microphone or cloud operation was called. Screenshots and receipts are in `../../research/google-platform-review/evidence/workflow/` relative to this checkout. The final browser check includes the telemetry integration. Full-app ASGI 2.3 and 2.4 disconnect tests also pass, alongside request-ID, body forwarding, privacy and WebSocket bypass checks. Candidate-verifier regressions cover event identity/order, terminal results, truncated streams, size/time limits, nonfinite JSON and exact script bytes. The release owner independently read the existing service timeout as 240 seconds, above the 160-second stream budget; no configuration change is required.
 
 Research context: [Google infrastructure NotebookLM](https://notebook.google.com/notebook/92b87f78-ea19-43b8-831f-8fa7c9e1b3b9), containing the Google platform sources and prior review. The prior review is a dated baseline; use this document for implementation status.
