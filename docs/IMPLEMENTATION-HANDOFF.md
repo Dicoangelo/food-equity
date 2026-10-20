@@ -8,16 +8,18 @@
 
 | Layer | Verified status at this handoff |
 |---|---|
-| Team repository | `main` is `0c952f3`; PRs #7 and #8 are merged, following #2/#4/#6. New Live intake and documentation updates remain unreleased working-tree changes. |
-| Live application | Cloud Run `seattle-food-broker`, `us-east1`, source `9027ea5`, revision `seattle-food-broker-00004-sxn`. Authenticated smoke passed health, city, FoodKeeper, real ADK/MCP bakery success and cold-capacity refusal. Bakery returned one proposal and one backup, with the exact deadline retained. |
-| Public demo access | Dico explicitly authorized public invocation of this single service. The service-only IAM binding succeeded; unauthenticated HTTP checks returned 200 for `/`, `/api/health` and `/api/city`. Existing runtime service identity and private-loopback Toolbox are unchanged. |
-| Data verification | `/api/city` returned 389 tract points and 119 profiles: 110 `generated`, nine `planted`. The 661-product FoodKeeper reference returned options without changing the deadline. |
-| Local verification | Core Python/Node contracts and local phone layouts previously passed. The new Live backend independently passes 24 tests covering clock anchoring, bounded transport, origin checks and cleanup. Mock tests do not establish deployed microphone/WebSocket behavior. |
-| Live model probe | Gemini `gemini-3.8-live` in `us-central1` connected under the runtime identity and returned 33,122 audio bytes. Optional browser intake defaults off; integration is pending release. |
-| Historical replay audit | `seattle-food-audit-e1fbe03-dh844`: ten actual MCP retrievals, zero retrieval/evaluation errors, 389 supplied baseline tracts; two proposals (1/4 retail, 1/6 cross-track), eight no-matches. This predates current acceptance guards and includes posting 8's source-clock defect. |
-| Still pending | Deploy and verify Live intake end to end; capture the replay audit receipt for the current release. |
+| Team repository | `main` is `b6586cd8f807239b489a72f7f72b774d4e9e6254`; [PR #10](https://github.com/niatalwalkar/food-equity/pull/10) merged at `2026-10-20T18:00:12Z`, following PR #9. Ownership transfer is parked at Dico's request; the fork is unchanged. |
+| Public application | Combined source `d8f9c2159efa60f4e7b07324534fc509dd100d17`, exact revision `seattle-food-broker-00013-fum`, promoted to 100% traffic in `us-east1`; no moving latest-revision pointer. The tagged candidate passed health/city/FoodKeeper, real ADK/MCP bakery success with one backup and cold-capacity refusal. |
+| Public access | Dico authorized the verified service-only public invoker binding. Runtime ADC identity and private-loopback Toolbox remain separate from public invocation. |
+| Data | City response: 389 tract points, 119 profiles (110 generated, nine planted). FoodKeeper returned options without changing the clock. |
+| Local verification | Combined suite: 245 Python tests and both Node UI/explorer suites passed. Independent focused Live/smoke suite: 50 passed; static repair feedback, atomic rejection and exact deadline retention verified. |
+| Live acceptance | Original unchanged typed smoke also passed on the public URL after promotion at `17:58:07Z`: ready/draft update/deadline/response all true, 309,120 audio bytes/six transcript events, no match request. Earlier combined candidate: draft updated to two pallets, exact deadline preserved, response complete, 228,482 generated-audio bytes/four transcript events, no match request. Predecessor `c60faa7` passed twice (242,880/four and 279,362/five). |
+| Browser verification | Typed draft → explicit Apply → separate real MCP match with winner/backup retained the exact deadline. Combined UI checks verified real bakery → winner profile, eligible filter with two options, 390px phone modal and 320px no-overflow layout; no new app errors. Physical microphone capture/playback remains unverified. |
+| Team portal | PR #9 merged, but Pages `has_pages=false`; workflow `39467685689` failed. Admin setup: Settings → Pages → GitHub Actions. No Pages URL claimed. |
+| Historical audit | `seattle-food-audit-e1fbe03-dh844`: ten MCP retrievals, zero evaluation/retrieval errors, 389 baseline tracts; two proposals, eight no-matches. Predates acceptance refinements and includes posting 8's source-clock defect. |
+| Still pending | Physical microphone capture/playback, Pages admin setup and a current-image replay audit receipt. Repository ownership transfer remains parked; the fork is unchanged. |
 
-Workspace evidence is under `outputs/google-impact-toolkit-2026-10-20/research/`: `LIVE-RELEASE-9027ea5.json`, `LIVE38-PROBE-9027.json`, `LIVE-TEAM-UI-9027ea5.png` and historical `AUDIT-E1FBE03.json`. The audit uses evaluation time `2026-10-20T16:30:00+00:00`; it is a historical replay. These workspace receipts are not embedded in this document.
+Workspace evidence is under `outputs/google-impact-toolkit-2026-10-20/research/`: `LIVE-CORE-CANDIDATE-d8f9c21.json`, `LIVE-INTAKE-CANDIDATE-d8f9c21.json`, `LIVE-INTAKE-PUBLIC-d8f9c21.json` and `LIVE-PROMOTION-d8f9c21.json` establish candidate checks, exact promotion and the final public-origin Live pass. `LIVE-INTAKE-CANDIDATE-c60faa7-1.json` and `-2.json` preserve the prior repeated Live passes. Historical `AUDIT-E1FBE03.json` uses evaluation time `2026-10-20T16:30:00+00:00`; it is a replay, not current operations. These workspace receipts are not embedded in this document.
 
 The historical audit's proposed-recipient neighborhood means were **below** the full equal-tract baseline: poverty −2.05 percentage points, no-vehicle households −3.62 points and assistance −3.11 points. Do not claim measured equity uplift, rescued food, actual deliveries or causal impact from this result.
 
@@ -46,8 +48,9 @@ Coordinator browser
 | [agent/matcher.py](../agent/matcher.py) | Pure storage, capacity, pickup, schedule and explicit acceptance gates; eligible-only ranking. Its direct BigQuery helper is diagnostic, not the web retrieval path. |
 | [agent/tools.yaml](../agent/tools.yaml) | One parameterized read-only MCP tool: `gemini-embedding-2`, COSINE, brute-force search, top 12; embeddings excluded from returned rows. |
 | [agent/city.py](../agent/city.py) | Bounded BigQuery map reads, 300-second ready cache, 15-second failed/partial cache, no model calls. |
+| [recipient-explorer.js](../agent/ui/recipient-explorer.js), [CSS](../agent/ui/recipient-explorer.css) | Linked search/filter/map/profile views by recipient ID; winner/backups preserve backend order; mobile sheet traps/restores focus; opening a profile makes no API/model call. |
 | [agent/foodkeeper.py](../agent/foodkeeper.py) | Literal all-query-term search over the pinned 661-product reference; no inferred remaining freshness. |
-| [agent/live_intake.py](../agent/live_intake.py) | Pending optional Gemini 3.8 Live draft adapter: bounded session, explicit quantity/window evidence, fixed-clock preservation, review before applying to the form. It cannot match, send or reserve. |
+| [agent/live_intake.py](../agent/live_intake.py) | Gemini 3.8 Live draft adapter with validated sparse patches: bounded session, explicit quantity/window evidence, fixed-clock preservation, review before applying to the form. It cannot match, send or reserve. |
 | [scripts/serve.py](../scripts/serve.py), [Dockerfile](../Dockerfile) | Official Toolbox 1.14.0 on loopback port 5000; FastAPI on `PORT`/8080, supervised together. Only HTTP is exposed. |
 | [scripts/audit_postings.py](../scripts/audit_postings.py), [scripts/run_audit_job.py](../scripts/run_audit_job.py) | Ten-posting replay through MCP and the matcher without Gemini; full-tract baseline, explicit manifest and bounded job wrapper. |
 
@@ -64,7 +67,7 @@ Vertex defaults to `gemini-2.5-flash` in `us-east1`. BigQuery dataset `a4i_food`
 | `POST /api/match` | Real ADK/MCP flow. A no-match or fallback is an explicit result, not an invented success. |
 | `GET /api/city` | `ready`, `partial` or `unavailable`; sanitized `tracts`, `recipients`, `provenance`, `limits`, `warnings`, `errors`, `as_of`, `cache`. |
 | `GET /api/foodkeeper?query=…` | Query 2–120 characters; at most five literal-match options, exact subtype/storage basis, raw fields, source hash and unresolved applicability. No automatic product selection. |
-| `GET /healthz`, `GET /api/health` | Same process-only response: `{"status":"ok","cloud_dependencies":"not_checked"}`. Keep `/healthz` for probes; the new `/api/health` alias avoids the Google edge interception observed on external `/healthz`. `/api/health` passed the `9027ea5` release check. |
+| `GET /healthz`, `GET /api/health` | Same process-only response: `{"status":"ok","cloud_dependencies":"not_checked"}`. Keep `/healthz` for probes; the new `/api/health` alias avoids the Google edge interception observed on external `/healthz`. `/api/health` passed the combined `d8f9c21` candidate check. |
 | `GET /docs`, `GET /openapi.json` | FastAPI schema/documentation with the same service access policy; public-demo access is enabled. |
 
 Match input: `posting_text` 5–4000 characters; `donor_name` 1–200; finite `pallet_count` >0 to 10,000; `hours_remaining` >0 to 168; geographic `donor_lat`/`donor_lon`; `required_storage` = `cold`, `ambient` or `frozen`; optional timezone-aware `deadline_at`. Refrigeration/dry aliases normalize, unknown fields are forbidden, and expired deadlines fail validation.
@@ -85,6 +88,8 @@ The UI follows **offer → review → handoff**. Only one match request can run 
 The donor deadline is fixed when an offer is run. Unchanged retries retain it. The API forwards the absolute deadline through lazy initialization, and the broker uses the earlier of the supplied deadline and relative window. Retrieval and model time consume that window; constraints run again before returning. The default 15-minute coordination buffer is not a food-safety rule. Pickup timing comes from supplied/profile estimates, not verified driving time. Recognized Seattle service days are checked; unknown schedules stay pending.
 
 Known storage conflict, insufficient full-lot capacity, missed clock/buffer or known closed service day rejects a candidate. Unknown/contradictory critical fields stay pending. Vehicle refrigeration does not prove receiving-site cold storage. Explicit starter-profile refusal guards cover meat/pork, certification, labeling, infant-only, nonperishable and formula-package clauses. Unmatched/conditional clauses and unsupported tails of recognized refusals go pending; a qualified food restriction is not treated as a blanket food ban. These are bounded literal patterns, not a general allergy, ingredient, religious-certification or safety verifier. Every “eligible” profile still requires human confirmation.
+
+The linked explorer filters map/list together and exposes capacity, storage, schedule, acceptance, exact deadline and provenance. Eligible-only offer-fit bars explain this specific offer, not charity quality; reconstruction from rounded response fields is disclosed and the backend score/order stays authoritative. Directions refresh when the donor origin changes; invalid evaluated origins disable the link.
 
 Eligible ranking uses 40% semantic similarity, 35% neighborhood proxy and 25% logistics features. These are design weights, not learned fairness guarantees. Missing neighborhood components contribute no ranking score and remain disclosed as unknown. The displayed heat value is the mean of poverty and no-vehicle rates only when both exist.
 
@@ -115,6 +120,7 @@ From the repository root:
 python -m pip install -r requirements-dev.txt
 python -m pytest tests -q
 node tests/test_ui_contract.js
+node tests/test_recipient_explorer.js
 ```
 
 The Python suite includes real ADK execution with a scripted model and mocked MCP boundary; this is offline correctness evidence, not a cloud call. Node tests exercise safe DOM output, fixed clock, presets, single-flight locking, pending facts, copies, map and FoodKeeper. API tests also parse the actually rendered JavaScript and assert health/UI requests do not invoke the broker.
@@ -129,8 +135,10 @@ python scripts/verify_live_release.py \
   --output /tmp/release-evidence.json
 ```
 
-Use a new output filename. It validates the target, holds the identity token in process memory and records sanitized health/city/FoodKeeper plus real ADK/MCP bakery/refusal evidence. A successful no-match is distinct from a runtime failure. The `9027ea5` receipt has both a bakery success and a cold-capacity refusal; health alone does not verify cloud dependencies. Check direct access and the released UI at desktop/phone widths separately. Replay audits must use a declared evaluation timestamp and exact release image, with source assumptions preserved.
+Use a new output filename. It validates the target, holds the identity token in process memory and records sanitized health/city/FoodKeeper plus real ADK/MCP bakery/refusal evidence. A successful no-match is distinct from a runtime failure. The combined `d8f9c21` candidate core receipt has both a bakery success and a cold-capacity refusal; health alone does not verify cloud dependencies. Check direct access and the released UI at desktop/phone widths separately. Replay audits must use a declared evaluation timestamp and exact release image, with source assumptions preserved.
 
-The pending Live routes are `GET /api/live/config` and WebSocket `/api/live/intake`. They use ADC server-side, session/message bounds and exact origin checks; origin checks are not user authentication. Keep `FOOD_LIVE_ENABLED` off until the intended demo access and end-to-end draft review are verified. Confirm Start/Stop, microphone denial, typed fallback, fixed deadlines, disconnect cleanup and expiry. Applying a reviewed draft must not trigger matching or send outreach.
+The Live routes are `GET /api/live/config` and WebSocket `/api/live/intake`. They use server-side ADC, session/message bounds and exact origin checks; origin checks are not authentication. `FOOD_LIVE_ENABLED` defaults off in code and remains the operator switch. The earlier copied-context-hours guard rejection was addressed by sparse-patch prompting/static feedback in `c60faa7`, then the unchanged typed smoke passed twice and passed again on combined `d8f9c21`. This change did not relax validation. Invalid edits remain atomic; unrelated context hours must be omitted, and unchanged deadlines are retained.
 
-**Next action:** release and validate optional Live intake on the verified public demo. [A2A-RESCUE-EXCHANGE-PRD.md](A2A-RESCUE-EXCHANGE-PRD.md) remains design only; no A2A endpoint, partner negotiation, durable exchange ledger, payments or delivered-impact accounting is implemented.
+Cleanup fix `b2ed2f8` bounds terminal status/close I/O to one second each. Independent backpressure replay returned in 2.361 seconds with both sends cancelled, provider/client closed, reader stopped and zero session slots retained. Verify candidate Start/Stop, microphone denial, typed fallback, fixed deadlines, disconnect and expiry. Applying a draft must not trigger matching or send outreach.
+
+**Next action:** verify physical microphone capture/playback and coordinate Pages admin setup. [A2A-RESCUE-EXCHANGE-PRD.md](A2A-RESCUE-EXCHANGE-PRD.md) remains design only; no A2A endpoint, partner negotiation, durable exchange ledger, payments or delivered-impact accounting is implemented.

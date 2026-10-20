@@ -1,4 +1,4 @@
-# Hackathon control board — 20 October 2026, 13:28 EDT
+# Hackathon control board — 20 October 2026, 14:01 EDT
 
 **Seattle · retail/grocer rescue · five people.** Project `qwiklabs-gcp-04-b992b9561e32`; `us-east1` / `us-east1-b`; BigQuery `a4i_food` in `US`.
 
@@ -6,13 +6,13 @@
 |---|---|
 | Access | Student Cloud Shell and Owner verified. Public invocation granted to this Cloud Run service only; unauthenticated page/health/city HTTP 200. Dicoangelo uses fork PRs; Nia merges. |
 | APIs/data | Vertex, Run, Build, Artifact Registry, BigQuery/connection enabled. 119 profiles × 3072 embeddings; 389 tracts. 110 generated + 9 planted operational profiles, not confirmed partners. |
-| Deploy | [Public live broker](https://seattle-food-broker-6ukbp746xa-ue.a.run.app), source `9027ea5`, revision `00004-sxn`. Light responsive UI; real ADK → MCP → BigQuery → Gemini bakery match + cold-capacity refusal passed. |
-| Evidence | Bakery: one winner + one backup; exact donor deadline preserved. Earlier fixed replay: 2/10 proposals, 8 no-matches, no equity uplift. Exact current-image replay receipt pending collection. No actual deliveries. |
-| Repo/quality | Main `0c952f3`, PR #7/#8 merged. New Live intake local suite: **220 Python + Node UI checks pass**; browser/Cloud Run Live verification pending. |
-| Integration | Gemini 3.8 Live runtime identity probe passed in `us-central1`; feature defaults off. Antigravity assigned actual-main integration contracts/gaps. Parser/state patch remains unintegrated. |
+| Deploy | [Public live broker](https://seattle-food-broker-6ukbp746xa-ue.a.run.app), source `d8f9c21`, exact revision `00013-fum` pinned at 100%. Live intake plus linked map/list/profile UI; desktop and 390/320px layouts verified. |
+| Evidence | Candidate full core smoke passed: real ADK → MCP → BigQuery bakery proposal + backup, cold-capacity refusal, city and FoodKeeper. Public Gemini 3.8 Live typed draft/tool/audio check passed with fixed deadline. No actual acceptance or deliveries. |
+| Repo/quality | Main `b6586cd`; Nia merged [PR #10](https://github.com/niatalwalkar/food-equity/pull/10), containing the deployed Live/map integration. **245 Python + both Node UI suites pass.** Focused commits preserved. |
+| Integration | Broker in `us-east1`; Live in `us-central1`, enabled for public demo. Draft → explicit Apply → separate match. Antigravity independently checks pinned Python 3.12 requirements. Parser/state patch remains unintegrated. |
 
 **Toronto:** freeze **15:30** → submit **16:30** → hard deadline **16:59**.
 
-**Open:** full Live WebSocket/tool proof; actual road routing; parser integration; GitHub Pages admin activation; named deck/video/submission owners; detailed rubric/reuse policy.
+**Open:** physical microphone rehearsal; actual road routing; parser integration; GitHub Pages admin activation; named deck/video/submission owners; detailed rubric/reuse policy. Historical replay remains 2/10 proposals, 8 no-matches, no equity uplift.
 
-**Single next action:** publish the team entry/docs and verify the optional Live intake on Cloud Run before enabling it.
+**Single next action:** rehearse the public demo together, including physical microphone capture/playback and the refusal case.
