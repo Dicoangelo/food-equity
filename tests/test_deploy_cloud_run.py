@@ -65,6 +65,8 @@ elif a[:3]==['run','services','describe']:
  print(json.dumps(s))
 elif a[:2]==['run','deploy']:
  s=json.loads(state.read_text());rev='seattle-food-broker-'+option('--revision-suffix')
+ assert len(option('--tag'))+len('seattle-food-broker') <= 46, 'Cloud Run traffic-tag limit'
+ assert len(rev) <= 63, 'Cloud Run revision-name limit'
  assert '--no-traffic' in a and '--allow-unauthenticated' not in a
  assert '--source' in a and option('--source')!=os.getcwd()
  s['spec']['template']['spec']['containers'][0]['env'].append({{'name':'APP_COMMIT_SHA','value':os.environ['HEAD_SHA']}})

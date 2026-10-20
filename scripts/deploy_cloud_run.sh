@@ -56,7 +56,9 @@ trap 'rm -rf "$workspace"' EXIT
 git archive "$sha" | tar -x -C "$workspace"
 nonce="$("$python" -c 'import secrets; print(secrets.token_hex(3))')"
 suffix="g${sha:0:10}-$(date -u +%s)-$nonce"
-tag="$suffix"
+# Cloud Run limits the combined traffic-tag and service name to 46 characters.
+# The revision can retain the timestamp; the tag uses the same random nonce.
+tag="g${sha:0:10}-$nonce"
 revision="$service-$suffix"
 
 # Raw service metadata (possibly secret-bearing env values) stays in process memory.
