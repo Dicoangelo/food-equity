@@ -21,7 +21,7 @@ MatchRunner = Callable[[ProgressCallback], Awaitable[dict]]
 
 PROGRESS_STAGES = frozenset({
     "connecting", "retrieving", "checking_constraints",
-    "preparing_brief", "finalizing",
+    "enriching_evidence", "preparing_brief", "finalizing",
 })
 COUNT_FIELDS = frozenset({
     "candidate_count", "retrieved_count", "eligible_count",

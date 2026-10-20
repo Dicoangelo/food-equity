@@ -17,6 +17,46 @@ URL = "https://example-service-abc-ue.a.run.app"
 TOKEN = "example.header.signature"
 
 
+def context_fixture(now=NOW):
+    from agent.context_evidence import entry
+    food = foodkeeper_fixture()
+    food.pop("source")
+    food["query"] = "bread"
+    tract = {"tract_id": "53033000100", "poverty_rate": .2, "no_vehicle_rate": .1,
+             "assistance_rate": None, "need_score": .15, "rate_units": "fraction_0_to_1",
+             "geography_precision": "tract_centroid", "observation_year": None,
+             "service_catchment_verified": False}
+    entries = [entry("lookup_shelf_life", {"query": "bread"}, "ready", data=food, retrieved_at=now.isoformat()),
+               entry("get_tract_equity", {"tract_id": tract["tract_id"]}, "ready",
+                     data=tract, retrieved_at=now.isoformat())]
+    trace = [{"stage": "context_mcp_discovery", "tools": ["lookup_shelf_life", "get_tract_equity"]}]
+    for index, item in enumerate(entries):
+        tool = item["source"]["tool"]
+        trace.extend([
+            {"stage": "context_mcp_call", "tool": tool, "request_index": index,
+             "request_sha256": hashlib.sha256(json.dumps(item["request"], sort_keys=True).encode()).hexdigest()},
+            {"stage": "context_mcp_result", "tool": tool, "request_index": index, "status": "ready"},
+        ])
+    return {"status": "ready", "foodkeeper": entries[:1], "tract_equity": entries[1:],
+            "execution_trace": trace, "warnings": [], "deadline_modified": False,
+            "limits": {"distinct_products": 3, "distinct_tracts": 3}}
+
+
+def intake_fixture(request=None):
+    request = request or smoke.make_intake(NOW)
+    started = smoke.timestamp(request["deadline_at"]) - timedelta(hours=4) + timedelta(seconds=1)
+    return {
+        "status": "review_required", "model": "gemini-2.5-flash", "transport": "vertex_adk",
+        "requires_review": True, "sent": False,
+        "fields": {"posting_text": request["posting_text"], "pallet_count": 1, "required_storage": "ambient",
+                   "deadline_at": request["deadline_at"], "hours_remaining": 4 - 1 / 3600},
+        "food_terms": ["bread"], "quoted_evidence": {"pallet_count": "1 pallet", "required_storage": "shelf-stable",
+                                                     "pickup_deadline": "Pickup within 4 hours."},
+        "questions": ["Confirm origin and availability."], "started_at": started.isoformat(),
+        "source_text_sha256": hashlib.sha256(request["posting_text"].encode()).hexdigest(),
+    }
+
+
 def broker_fixture(stress=False, winner=True):
     offer = smoke.make_offer(stress, NOW)
     evaluated = NOW + timedelta(seconds=10)
@@ -25,6 +65,7 @@ def broker_fixture(stress=False, winner=True):
         "operational_data_verified": False, "deadline_at": offer["deadline_at"],
         "clock_basis": "fixed_deadline", "constraint_status": "eligible",
         "max_pallets": 2, "time_margin_hours": 20, "reason_codes": [],
+        "name": "Fixture food bank", "tract_id": "53033000100", "min_buffer_hours": .25,
     }
     trace = [
         {"stage": "mcp_discovery", "tool": "vector_search_recipients"},
@@ -48,11 +89,19 @@ def broker_fixture(stress=False, winner=True):
         "winner": row if winner else None, "runners_up": [], "eliminated_decoys": [],
         "pending_confirmation": [],
     }
+    if not stress:
+        body["context_evidence"] = context_fixture()
+        trace[5:5] = body["context_evidence"]["execution_trace"]
     if winner:
         body.update(brief_generation="deterministic_facts", outreach_mode="gemini_plan",
                     match_brief={field: "Fixed deadline " + offer["deadline_at"] for field in
                                  ("clock_action_plan", "drafted_sms_outreach", "drafted_email_outreach")})
         trace.append({"stage": "brief_render", "facts_source": "final_deterministic_ranking"})
+        card = {"id": "winner.capacity", "text": "Fixture food bank lists 2.00 pallets of capacity. "
+                "This is a stored profile limit; available space still needs confirmation.",
+                "source": "MCP vector_search_recipients / recipient profile"}
+        body["synthesis_evidence"] = [card]
+        body["match_brief"]["match_justification"] = card["text"]
     else:
         row.update(constraint_status="rejected", reason_codes=["capacity_exceeded" if stress else "service_day_closed"])
         body["eliminated_decoys"].append(row)
@@ -98,6 +147,84 @@ def test_stress_case_requires_actual_capacity_rejection():
     body["eliminated_decoys"][0]["reason_codes"] = ["service_day_closed"]
     with pytest.raises(smoke.VerificationError, match="capacity_stress_not_blocked"):
         smoke.check_broker(body, offer, stress=True)
+
+
+def test_intake_proves_explicit_units_quotes_review_and_unchanged_deadline():
+    request = smoke.make_intake(NOW)
+    summary = smoke.check_intake(intake_fixture(request), request)
+    assert summary["deadline_at"] == request["deadline_at"]
+    assert summary["pallet_count"] == 1 and summary["requires_review"] and not summary["sent"]
+    assert "quoted_evidence" not in summary
+
+
+@pytest.mark.parametrize("mutate,code", [
+    (lambda b: b.update(requires_review=False), "intake_review_boundary"),
+    (lambda b: b.update(sent=True), "intake_review_boundary"),
+    (lambda b: b.update(transport="mock"), "intake_model_contract"),
+    (lambda b: b.update(source_text_sha256="wrong"), "intake_source_changed"),
+    (lambda b: b["fields"].update(pallet_count=200), "intake_fabricated_or_missing_fields"),
+    (lambda b: b["fields"].update(donor_lat=47.6), "intake_fabricated_or_missing_fields"),
+    (lambda b: b["fields"].update(deadline_at=(NOW + timedelta(hours=5)).isoformat()), "intake_deadline_changed"),
+    (lambda b: b["fields"].update(hours_remaining=4), "intake_clock_inconsistent"),
+    (lambda b: b["quoted_evidence"].update(pallet_count="200 loaves"), "intake_quote_not_grounded"),
+    (lambda b: b["quoted_evidence"].pop("pickup_deadline"), "intake_quotes_missing"),
+    (lambda b: b.update(food_terms=["milk"]), "intake_food_terms"),
+    (lambda b: b.update(winner={"recipient_id": "91"}), "intake_review_questions"),
+])
+def test_intake_rejects_unsupported_fields_changed_clock_or_automatic_action(mutate, code):
+    body = intake_fixture()
+    mutate(body)
+    with pytest.raises(smoke.VerificationError, match=code):
+        smoke.check_intake(body, smoke.make_intake(NOW))
+
+
+@pytest.mark.parametrize("mutate,code", [
+    (lambda b: b["context_evidence"].update(status="unavailable"), "context_not_ready"),
+    (lambda b: b["context_evidence"].update(deadline_modified=True), "context_not_ready"),
+    (lambda b: b["context_evidence"].update(tract_equity=[]), "context_bounded_lookups"),
+    (lambda b: b["context_evidence"]["foodkeeper"].__imul__(4), "context_bounded_lookups"),
+    (lambda b: b["context_evidence"]["foodkeeper"][0].update(operational_data_verified=True), "context_entry_contract"),
+    (lambda b: b["context_evidence"]["foodkeeper"][0]["source"].update(transport="local_fallback"), "context_source_contract"),
+    (lambda b: b["context_evidence"]["foodkeeper"][0]["source"].update(sha256="wrong"), "context_foodkeeper_pin"),
+    (lambda b: b["context_evidence"]["foodkeeper"][0]["request"].update(query="milk"), "context_product_not_grounded"),
+    (lambda b: b["context_evidence"]["foodkeeper"][0]["data"].update(remaining_freshness_hours=24), "context_foodkeeper_advisory"),
+    (lambda b: b["context_evidence"]["tract_equity"][0]["request"].update(tract_id="53033000999"), "context_tract_not_grounded"),
+    (lambda b: b["context_evidence"]["tract_equity"][0]["data"].update(observation_year=2026), "context_tract_contract"),
+    (lambda b: b["context_evidence"]["tract_equity"][0]["data"].update(poverty_rate=20), "context_tract_rate_units"),
+    (lambda b: b["context_evidence"]["tract_equity"][0]["data"].update(need_score=.9), "context_need_score"),
+    (lambda b: b["context_evidence"]["tract_equity"][0].update(retrieved_at=(NOW-timedelta(days=1)).isoformat()), "context_retrieval_time"),
+    (lambda b: b["execution_trace"].pop(6), "context_trace_counts"),
+    (lambda b: b["execution_trace"][6].update(request_sha256="wrong"), "context_trace_mismatch"),
+])
+def test_bakery_requires_both_real_bounded_context_sources(mutate, code):
+    offer, body = broker_fixture()
+    mutate(body)
+    with pytest.raises(smoke.VerificationError, match=code):
+        smoke.check_broker(body, offer)
+
+
+def test_synthesis_checks_final_fact_card_contents_not_just_valid_ids():
+    offer, body = broker_fixture()
+    summary = smoke.check_broker(body, offer)
+    assert summary["synthesis"]["selected_card_ids"] == ["winner.capacity"]
+    assert summary["synthesis"]["model_role"] == "evidence_selection_and_outreach_priorities"
+    body["synthesis_evidence"][0]["text"] = "Fixture food bank has confirmed 100 pallets of space."
+    body["match_brief"]["match_justification"] = body["synthesis_evidence"][0]["text"]
+    with pytest.raises(smoke.VerificationError, match="synthesis_evidence_not_grounded"):
+        smoke.check_broker(body, offer)
+
+
+@pytest.mark.parametrize("mutation,code", [
+    (lambda b: b.update(synthesis_evidence=[]), "synthesis_evidence_missing"),
+    (lambda b: b["synthesis_evidence"][0].update(id="invented.card"), "synthesis_evidence_not_grounded"),
+    (lambda b: b["synthesis_evidence"].__imul__(2), "synthesis_evidence_duplicate"),
+    (lambda b: b["match_brief"].update(match_justification="Unrelated prose"), "synthesis_evidence_not_grounded"),
+])
+def test_synthesis_requires_bounded_unique_rendered_final_references(mutation, code):
+    offer, body = broker_fixture()
+    mutation(body)
+    with pytest.raises(smoke.VerificationError, match=code):
+        smoke.check_broker(body, offer)
 
 
 def city_fixture():
@@ -339,7 +466,9 @@ class FakeClient:
             smoke.WORKFLOW_PATH: smoke.WORKFLOW_SOURCE.read_bytes(),
             "/api/recipients/91/evidence": recipient_evidence_fixture(),
         }
-        if payload:
+        if path == smoke.INTAKE_PATH:
+            body = intake_fixture(payload)
+        elif payload:
             stress = payload["pallet_count"] == 10000
             _, body = broker_fixture(stress=stress, winner=False)
             body["donor"].update({k: payload[k] for k in body["donor"] if k != "hours_remaining"})
@@ -348,6 +477,10 @@ class FakeClient:
             body["donor"]["hours_remaining"] = payload["hours_remaining"]
             for row in body["eliminated_decoys"]:
                 row["deadline_at"] = payload["deadline_at"]
+            for entries in (body.get("context_evidence", {}).get("foodkeeper", []),
+                            body.get("context_evidence", {}).get("tract_equity", [])):
+                for item in entries:
+                    item["retrieved_at"] = evaluated.isoformat()
             body["execution_trace"][2]["query_sha256"] = hashlib.sha256(payload["posting_text"].encode()).hexdigest()
         else:
             body = bodies[path]
@@ -358,6 +491,9 @@ class FakeClient:
 
     def request_recipient_evidence(self, identifier):
         return self.request("GET", smoke.recipient_evidence_path(identifier))
+
+    def request_intake(self, payload):
+        return self.request("POST", smoke.INTAKE_PATH, payload)
 
 
 @pytest.mark.parametrize("cheap", [False, True])
@@ -370,7 +506,7 @@ def test_evidence_contains_no_token_and_cheap_mode_never_claims_runtime(monkeypa
     report = json.loads(path.read_text())
     assert report["runtime_passed"] is (not cheap)
     assert report["proposed_count"] == 0
-    assert len(report["checks"]) == (5 if cheap else 7)
+    assert len(report["checks"]) == (5 if cheap else 8)
     assert TOKEN not in path.read_text() + capsys.readouterr().out
 
 
@@ -411,13 +547,13 @@ def test_source_telemetry_mismatch_stops_before_cloud_agent_calls():
 def test_fallback_still_records_observed_proposals_without_runtime_success():
     class Fallback(FakeClient):
         def request(self, method, path, payload=None):
-            if payload:
+            if path in (smoke.STREAM_PATH, "/api/match"):
                 _, body = broker_fixture()
                 body.update(status="draft", generation_mode="deterministic_fallback")
                 return {"http_status": 200, "latency_ms": 3}, body
             return super().request(method, path, payload)
     checks = smoke.run_checks(Fallback())
-    for check in checks[5:]:
+    for check in [row for row in checks if row["endpoint"] in (smoke.STREAM_PATH, "/api/match")]:
         assert check["passed"] is False
         assert check["response_status"] == "draft"
         assert check["observed_proposed_count"] == 1
@@ -428,7 +564,7 @@ def stream_fixture(body=None):
     body = broker_fixture()[1] if body is None else body
     events = [
         {"type": "progress", "stage": stage}
-        for stage in ("accepted", "connecting", "retrieving", "checking_constraints", "finalizing")
+        for stage in ("accepted", "connecting", "retrieving", "checking_constraints", "enriching_evidence", "finalizing")
     ]
     events[3]["candidate_count"] = 1
     events.append({"type": "result", "data": body})
@@ -490,7 +626,7 @@ def test_stream_incrementally_reads_split_records_and_returns_only_safe_receipt(
     assert receipt["stream_events"] == len(events)
     assert receipt["response_sha256"] == hashlib.sha256(raw).hexdigest()
     assert receipt["response_bytes"] == len(raw)
-    assert receipt["progress_stages"] == list(smoke.PROGRESS_STAGES[:4]) + ["finalizing"]
+    assert receipt["progress_stages"] == list(smoke.PROGRESS_STAGES[:5]) + ["finalizing"]
     assert receipt["first_event_latency_ms"] >= 0
     assert receipt["terminal_result_received"] is True
     assert requests[0].headers["Authorization"] == "Bearer " + TOKEN
@@ -549,6 +685,17 @@ def test_stream_requires_actual_broker_progress(monkeypatch):
     mock_stream(monkeypatch, ByteStream([wire_events(events)]))
     with pytest.raises(smoke.VerificationError, match="stream_missing_progress"):
         smoke.LiveClient(URL, None).request_stream({})
+
+
+def test_stream_cannot_skip_new_context_enrichment_stage(monkeypatch):
+    events = [event for event in stream_fixture() if event.get("stage") != "enriching_evidence"]
+    for sequence, event in enumerate(events, 1):
+        event["sequence"] = sequence
+    stream = ByteStream([wire_events(events)])
+    mock_stream(monkeypatch, stream)
+    with pytest.raises(smoke.VerificationError, match="stream_missing_progress"):
+        smoke.LiveClient(URL, None).request_stream({})
+    assert stream.closed
 
 
 @pytest.mark.parametrize("status,content_type,code", [
@@ -666,7 +813,7 @@ def test_release_gate_keeps_exactly_two_broker_requests_across_both_transports()
             return super().request(method, path, payload)
     checks = smoke.run_checks(TrackingClient())
     assert all(check["passed"] for check in checks)
-    assert [path for method, path in calls if method == "POST"] == [smoke.STREAM_PATH, "/api/match"]
+    assert [path for method, path in calls if method == "POST"] == [smoke.INTAKE_PATH, smoke.STREAM_PATH, "/api/match"]
     assert calls.count(("GET", "/api/city")) == 1
     assert calls.count(("GET", "/api/recipients/91/evidence")) == 1
 
@@ -722,13 +869,15 @@ def test_invalid_city_cannot_supply_an_evidence_path_or_trigger_model_calls():
     assert checks[-1]["error_code"] == "invalid_evidence_recipient_id"
 
 
-def mock_evidence_http(monkeypatch, stream, *, status=200, content_type="application/json", cache="no-store"):
+def mock_evidence_http(monkeypatch, stream, *, status=200, content_type="application/json", cache="no-store",
+                       path="/api/recipients/91/evidence", payload=None):
     original_client = httpx.AsyncClient
     requests = []
     def handle(request):
         requests.append(request)
-        assert request.method == "GET" and request.url == URL + "/api/recipients/91/evidence"
-        assert request.content == b"" and request.headers["Accept"] == "application/json"
+        assert request.method == ("POST" if payload is not None else "GET") and request.url == URL + path
+        assert (json.loads(request.content) == payload if payload is not None else request.content == b"")
+        assert request.headers["Accept"] == "application/json"
         return httpx.Response(status, headers={
             "Content-Type": content_type, "Cache-Control": cache, "Location": "https://untrusted.example",
         }, stream=stream)
@@ -738,6 +887,62 @@ def mock_evidence_http(monkeypatch, stream, *, status=200, content_type="applica
         return original_client(transport=httpx.MockTransport(handle), **kwargs)
     monkeypatch.setattr(smoke.httpx, "AsyncClient", make_client)
     return requests
+
+
+def test_intake_transport_is_one_no_store_bounded_post_without_token_receipt(monkeypatch):
+    payload = smoke.make_intake(NOW)
+    raw = json.dumps(intake_fixture(payload)).encode()
+    stream = ByteStream([raw[:5], raw[5:]])
+    requests = mock_evidence_http(monkeypatch, stream, path=smoke.INTAKE_PATH, payload=payload)
+    receipt, body = smoke.LiveClient(URL, TOKEN).request_intake(payload)
+    assert len(requests) == 1 and stream.closed and receipt["cache_control_no_store"]
+    assert smoke.check_intake(body, payload)["deadline_at"] == payload["deadline_at"]
+    assert TOKEN not in json.dumps(receipt)
+
+
+def test_intake_rejects_cacheable_response_and_closes_without_read(monkeypatch):
+    class Unread(ByteStream):
+        async def __aiter__(self):
+            pytest.fail("Do not consume a cached intake")
+            yield b""
+    payload = smoke.make_intake(NOW)
+    stream = Unread([])
+    mock_evidence_http(monkeypatch, stream, path=smoke.INTAKE_PATH, payload=payload, cache="max-age=3600")
+    with pytest.raises(smoke.VerificationError, match="intake_cache_contract"):
+        smoke.LiveClient(URL, TOKEN).request_intake(payload)
+    assert stream.closed
+
+
+def test_intake_total_timeout_cancels_even_after_complete_json(monkeypatch):
+    class Stalled(ByteStream):
+        cancelled = False
+        async def __aiter__(self):
+            yield json.dumps(intake_fixture()).encode()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                self.cancelled = True
+                raise
+    payload = smoke.make_intake(NOW)
+    stream = Stalled([])
+    requests = mock_evidence_http(monkeypatch, stream, path=smoke.INTAKE_PATH, payload=payload)
+    with pytest.raises(smoke.VerificationError, match="intake_http_timeout"):
+        smoke.LiveClient(URL, TOKEN, timeout=.025).request_intake(payload)
+    assert len(requests) == 1 and stream.cancelled and stream.closed
+
+
+def test_unavailable_intake_stops_before_broker_and_is_not_retried():
+    calls = []
+    class Unavailable(FakeClient):
+        def request(self, method, path, payload=None):
+            calls.append(path)
+            if path == smoke.INTAKE_PATH:
+                return {"http_status": 503}, None
+            return super().request(method, path, payload)
+    checks = smoke.run_checks(Unavailable())
+    assert checks[-1]["name"] == "free_text_intake" and not checks[-1]["passed"]
+    assert calls.count(smoke.INTAKE_PATH) == 1
+    assert smoke.STREAM_PATH not in calls and "/api/match" not in calls
 
 
 @pytest.mark.parametrize("token", [None, TOKEN])

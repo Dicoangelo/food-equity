@@ -42,6 +42,7 @@
     connecting: 'Connecting to the recipient data source…',
     retrieving: 'Finding candidate recipients…',
     checking_constraints: 'Checking storage, capacity and the pickup deadline…',
+    enriching_evidence: 'Reading tract evidence and product storage guidance through MCP…',
     preparing_brief: 'Preparing the proposed match brief…',
     finalizing: 'Rechecking the deadline before returning the result…',
   };

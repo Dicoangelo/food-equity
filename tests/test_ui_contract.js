@@ -40,6 +40,7 @@ const context = vm.createContext({
   window: {}, console, Date, Number, JSON, navigator: {}, TextDecoder, AbortController, setTimeout, clearTimeout,
 });
 vm.runInContext(fs.readFileSync(require('node:path').join(__dirname, '../agent/ui/offer-workflow.js'), 'utf8'), context);
+vm.runInContext(fs.readFileSync(require('node:path').join(__dirname, '../agent/ui/alert-intake.js'), 'utf8'), context);
 vm.runInContext(script, context);
 function matchResponse(data) {
   const events = [{type:'progress',stage:'accepted'}, {type:'progress',stage:'checking_constraints',candidate_count:12}, {type:'result',data}];

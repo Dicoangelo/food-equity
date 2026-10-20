@@ -150,6 +150,15 @@ except ImportError:
         from recipient_evidence import router as evidence_router
 app.include_router(evidence_router)
 
+try:
+    from .free_text_intake import router as alert_router
+except ImportError:
+    try:
+        from agent.free_text_intake import router as alert_router
+    except ImportError:
+        from free_text_intake import router as alert_router
+app.include_router(alert_router)
+
 # The browser UI is same-origin. Cross-origin clients must be explicitly configured.
 allowed_origins = [value.strip() for value in os.getenv("CORS_ORIGINS", "").split(",") if value.strip()]
 if allowed_origins:
@@ -385,6 +394,11 @@ def workspace_script():
     return FileResponse(Path(__file__).parent / "ui/workspace.js", media_type="text/javascript")
 
 
+@app.get("/ui/alert-intake.js", include_in_schema=False)
+def alert_intake_script():
+    return FileResponse(Path(__file__).parent / "ui/alert-intake.js", media_type="text/javascript")
+
+
 @app.get("/", response_class=HTMLResponse)
 def index_dashboard():
     """Serves the full-featured interactive Map Dashboard for coordinators & team demos."""
@@ -467,12 +481,19 @@ def index_dashboard():
           <label for="input-text" class="block text-xs text-muted mb-1">What is available?</label>
           <textarea id="input-text" oninput="offerChanged()" rows="3"
                     class="w-full surface-field border border-line rounded-lg px-3 py-2 text-sm text-ink focus:outline-none">10 crates of spinach, harvested yesterday, needs cold storage</textarea>
+          <button id="btn-alert-intake" type="button" class="action-secondary mt-2" onclick="analyzeSurplusAlert()">Extract details with Gemini</button>
+          <p id="alert-intake-status" role="status" aria-live="polite" class="text-xs text-secondary mt-2"></p>
+          <div id="alert-intake-review" class="hidden surface-inset rounded-lg p-3 mt-2">
+            <div id="alert-intake-details" class="text-xs text-secondary"></div>
+            <button id="btn-alert-apply" type="button" class="action-secondary mt-2" onclick="applySurplusAlert()">Apply reviewed details</button>
+          </div>
         </div>
 
         <div id="offer-fields" class="grid grid-cols-3 gap-3">
           <div>
             <label for="input-storage" class="block text-xs text-muted mb-1">Storage</label>
             <select id="input-storage" oninput="offerChanged()" class="w-full surface-field border border-line rounded-lg px-2.5 py-2 text-sm text-ink focus:outline-none">
+              <option value="">Confirm storage</option>
               <option value="cold" selected>Cold</option>
               <option value="ambient">Ambient</option>
               <option value="frozen">Frozen</option>
@@ -765,6 +786,7 @@ def index_dashboard():
   </aside>
 
   <script src="/ui/offer-workflow.js"></script>
+  <script src="/ui/alert-intake.js"></script>
   <!-- Leaflet & App JS -->
   <script>
     let map;
@@ -783,6 +805,47 @@ def index_dashboard():
     const receivedStages = [];
     let deadlineTicker = null;
     const offerFieldIds = ['input-donor','input-text','input-storage','input-pallets','input-hours'];
+    const alertIntake = AlertIntake.create({
+      snapshot: () => ({posting_text:document.getElementById('input-text').value,
+        deadline_at:offerClock.deadline, locked:matchInFlight}),
+      show: (draft, message) => {
+        document.getElementById('alert-intake-status').textContent = message;
+        const box = document.getElementById('alert-intake-details');
+        box.replaceChildren();
+        document.getElementById('alert-intake-review').classList.toggle('hidden', !draft);
+        if (!draft) return;
+        const f = draft.fields;
+        box.appendChild(textNode('p', `Products: ${(draft.food_terms || []).join(', ') || 'Confirm exact products'}`));
+        box.appendChild(textNode('p', `Declared storage: ${f.required_storage || 'Not supplied'} · Pallets: ${f.pallet_count ?? 'Not supplied'}`));
+        box.appendChild(textNode('p', `Pickup deadline: ${f.deadline_at ? deadlinePresentation(f.deadline_at)?.local || f.deadline_at : 'Confirm date, time and timezone'}`));
+        for (const [key, quote] of Object.entries(draft.quoted_evidence || {})) {
+          box.appendChild(textNode('p', `${key.replaceAll('_',' ')} — “${String(quote).slice(0,400)}”`));
+        }
+        for (const question of draft.questions.slice(0,8)) box.appendChild(textNode('p', question));
+        box.appendChild(textNode('p', 'Applying clears undeclared storage/quantity so example assumptions cannot carry into this offer. The existing clock cannot be extended.'));
+      },
+      apply: draft => {
+        const f = draft.fields;
+        // Validate the proposed clock before changing any form field.
+        let deadline = offerClock.deadline;
+        if (f.deadline_at && (!deadline || Date.parse(f.deadline_at) < Date.parse(deadline))) deadline = f.deadline_at;
+        const hours = deadline ? (Date.parse(deadline) - Date.now()) / 3600000 : null;
+        if (deadline && (!Number.isFinite(hours) || hours <= 0)) {
+          document.getElementById('alert-intake-status').textContent = 'This pickup deadline has expired. Confirm a new one with the donor.';
+          return;
+        }
+        offerChanged();
+        document.getElementById('input-storage').value = f.required_storage || '';
+        document.getElementById('input-pallets').value = f.pallet_count ?? '';
+        document.getElementById('input-hours').value = hours ?? '';
+        if (deadline) offerClock.apply(deadline, hours);
+        refreshDeadlineDisplay();
+        document.getElementById('alert-intake-status').textContent = 'Reviewed details applied. Confirm the remaining fields and pickup origin, then find a match.';
+        focusSection('offer-panel');
+      },
+    });
+    function analyzeSurplusAlert() { return alertIntake.analyze(); }
+    function applySurplusAlert() { return alertIntake.applyReviewed(); }
 
     function textNode(tag, text, className = '') {
       const node = document.createElement(tag);
@@ -818,6 +881,8 @@ def index_dashboard():
       offerFieldIds.forEach(id => { document.getElementById(id).disabled = locked; });
       scenarioButtons.forEach(button => { button.disabled = locked; });
       document.getElementById('btn-match').disabled = locked;
+      document.getElementById('btn-alert-intake').disabled = locked;
+      document.getElementById('btn-alert-apply').disabled = locked;
       refreshVoiceControls();
     }
     function reviewState(state, title, description, counts = '') {
@@ -836,6 +901,7 @@ def index_dashboard():
     }
     function offerChanged(field) {
       if (matchInFlight) return;
+      alertIntake.invalidate(field === 'hours');
       if (field === 'hours') {
         offerClock.reset();
         document.getElementById('voice-clock-note').classList.add('hidden');
@@ -1441,7 +1507,7 @@ def index_dashboard():
     }
     function applyScenario(sc) {
       if (matchInFlight) return;
-      offerChanged();
+      offerChanged('hours');
       document.getElementById('input-donor').value = sc.donor_name;
       document.getElementById('input-text').value = sc.posting_text;
       document.getElementById('input-storage').value = sc.required_storage;
@@ -1854,6 +1920,7 @@ def index_dashboard():
       if (deadlineTicker !== null) clearInterval(deadlineTicker);
       deadlineTicker = null;
       cancelMatching();
+      alertIntake.invalidate();
       stopVoiceSession('Session closed.');
       if (typeof ViewContext !== 'undefined') ViewContext.dispose();
     });
