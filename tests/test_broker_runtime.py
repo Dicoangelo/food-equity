@@ -1,0 +1,321 @@
+"""Actual ADK Runner tests with a fake model/MCP boundary; never call cloud."""
+import json
+import sys
+from pathlib import Path
+
+import pytest
+from google.adk.models.base_llm import BaseLlm
+from google.adk.models.llm_response import LlmResponse
+from google.genai import types
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from agent.broker import FoodBrokerAgent, parse_candidates, parse_outreach_plan, render_brief
+
+
+BRIEF = {
+    "tone": "concise",
+    "confirmation_focus": ["pickup_eta", "storage"],
+}
+CANDIDATE = {
+    "recipient_id": 1, "name": "Fixture Food Bank", "cold_storage": "commercial",
+    "max_pallets": 2, "pickup_window_hours": 1, "distance": 0.2,
+    "service_days": "Monday Tuesday Wednesday Thursday Friday Saturday Sunday",
+    "profile_source": "planted", "latitude": 47.6, "longitude": -122.3,
+}
+
+
+class ScriptedModel(BaseLlm):
+    model: str = "offline-test-model"
+    calls: int = 0
+    fail_after_tool: bool = False
+    skip_tool: bool = False
+    invalid_json: bool = False
+    final_payload: dict | None = None
+
+    async def generate_content_async(self, llm_request, stream=False):
+        self.calls += 1
+        if self.calls == 1 and not self.skip_tool:
+            yield LlmResponse(content=types.Content(role="model", parts=[
+                types.Part(function_call=types.FunctionCall(name="broker_match", args={}))
+            ]))
+        else:
+            if self.fail_after_tool:
+                raise RuntimeError("mock provider unavailable")
+            text = "not json" if self.invalid_json else json.dumps(self.final_payload or BRIEF)
+            yield LlmResponse(content=types.Content(role="model", parts=[types.Part(text=text)]))
+
+
+class FakeVectorTool:
+    name = "vector_search_recipients"
+
+    def __init__(self, payload=None, error=False):
+        self.payload = payload if payload is not None else json.dumps([CANDIDATE])
+        self.error = error
+        self.calls = []
+
+    async def run_async(self, args, tool_context):
+        self.calls.append(args)
+        assert tool_context is not None  # It is a real ADK tool context.
+        if self.error:
+            raise PermissionError("mock denied")
+        return self.payload
+
+
+class FakeToolset:
+    def __init__(self, tool):
+        self.tool = tool
+        self.closed = False
+
+    async def get_tools(self):
+        return [self.tool]
+
+    async def close(self):
+        self.closed = True
+
+
+async def execute(model=None, tool=None):
+    tool = tool or FakeVectorTool()
+    toolset = FakeToolset(tool)
+    broker = FoodBrokerAgent(model=model or ScriptedModel(), toolset_factory=lambda: toolset)
+    result = await broker.broker_posting_async("A pallet of chilled spinach", hours_remaining=6)
+    return result, tool, toolset
+
+
+@pytest.mark.asyncio
+async def test_real_adk_function_call_invokes_mcp_boundary_and_gates():
+    result, tool, toolset = await execute()
+    assert result["status"] == "success", result
+    assert result["generation_mode"] == "adk_gemini"
+    assert result["brief_generation"] == "deterministic_facts"
+    assert result["outreach_mode"] == "gemini_plan"
+    assert tool.calls == [{"query_text": "A pallet of chilled spinach"}]
+    assert result["winner"]["profile_source"] == "planted"
+    assert result["requires_confirmation"] is True
+    assert toolset.closed
+    stages = [e["stage"] for e in result["execution_trace"]]
+    assert "adk_function_call" in stages
+    assert "adk_function_result" in stages
+    assert stages.index("mcp_call") < stages.index("deterministic_constraints")
+
+
+@pytest.mark.asyncio
+async def test_denied_mcp_never_fabricates_brief():
+    result, _, toolset = await execute(tool=FakeVectorTool(error=True))
+    assert result["status"] == "blocked"
+    assert "winner" not in result and "match_brief" not in result
+    assert toolset.closed
+
+
+@pytest.mark.asyncio
+async def test_model_claim_without_tool_is_rejected():
+    result, tool, _ = await execute(model=ScriptedModel(skip_tool=True))
+    assert result["status"] == "blocked"
+    assert result["error_code"] == "tool_not_invoked"
+    assert not tool.calls
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("model", [
+    ScriptedModel(fail_after_tool=True), ScriptedModel(invalid_json=True),
+])
+async def test_generation_failure_is_explicit_draft(model):
+    result, _, _ = await execute(model=model)
+    assert result["status"] == "draft"
+    assert result["generation_mode"] == "deterministic_fallback"
+    assert "not been confirmed" in result["match_brief"]["operational_verification"]
+    assert "secured" not in result["match_brief"]["operational_verification"]
+
+
+@pytest.mark.asyncio
+async def test_empty_real_retrieval_has_no_winner():
+    result, _, _ = await execute(tool=FakeVectorTool(payload="[]"))
+    assert result["status"] == "no_viable_match"
+    assert result["winner"] is None
+
+
+@pytest.mark.parametrize("payload", [
+    {"error": "denied"}, {"isError": True}, [{"name": "No id"}], "garbage",
+    [{"recipient_id": i} for i in range(21)],
+])
+def test_invalid_mcp_output_is_not_a_candidate(payload):
+    with pytest.raises((ValueError, json.JSONDecodeError)):
+        parse_candidates(payload)
+
+
+def test_one_row_and_empty_mcp_encodings():
+    assert parse_candidates(json.dumps(CANDIDATE)) == [CANDIDATE]
+    assert parse_candidates("null") == []
+    assert len(parse_candidates([CANDIDATE, CANDIDATE])) == 1
+
+
+def test_cloud_runtime_uses_vertex_project_and_region_without_discovery():
+    broker = FoodBrokerAgent()
+    assert broker.model.client_kwargs == {
+        "vertexai": True, "project": "qwiklabs-gcp-04-b992b9561e32", "location": "us-east1",
+    }
+
+
+@pytest.mark.parametrize("row", [
+    {"recipient_id": 1},
+    {**CANDIDATE, "name": "  "},
+    {**CANDIDATE, "max_pallets": float("nan")},
+    {**CANDIDATE, "latitude": float("inf")},
+])
+def test_malformed_candidates_cannot_break_response_serialization(row):
+    with pytest.raises(ValueError):
+        parse_candidates([row])
+
+
+def advancing_clock(monkeypatch, elapsed_hours):
+    from datetime import datetime, timedelta, timezone
+    import agent.broker as broker_module
+    start = datetime(2026, 10, 20, 15, 0, tzinfo=timezone.utc)
+    times = iter([start, start, start + timedelta(hours=elapsed_hours)])
+    class Clock:
+        @staticmethod
+        def now(tz=None):
+            return next(times)
+    monkeypatch.setattr(broker_module, "datetime", Clock)
+
+
+@pytest.mark.asyncio
+async def test_offer_expiring_during_synthesis_is_no_longer_a_match(monkeypatch):
+    advancing_clock(monkeypatch, elapsed_hours=7)
+    result, _, _ = await execute()
+    assert result["status"] == "no_viable_match"
+    assert result["winner"] is None
+    assert result["donor"]["hours_remaining"] == 0
+    assert "match_brief" not in result
+    assert result["execution_trace"][-1]["stage"] == "dispatch_clock_recheck"
+
+
+@pytest.mark.asyncio
+async def test_changed_winner_gets_fresh_labeled_draft_not_old_model_brief(monkeypatch):
+    advancing_clock(monkeypatch, elapsed_hours=5)
+    backup = {**CANDIDATE, "recipient_id": 2, "name": "Backup Food Bank", "distance": 0.5, "pickup_window_hours": 0.25}
+    result, _, _ = await execute(tool=FakeVectorTool(payload=json.dumps([CANDIDATE, backup])))
+    assert result["status"] == "draft"
+    assert result["winner"]["recipient_id"] == 2
+    assert result["generation_mode"] == "deterministic_fallback"
+    assert "Backup Food Bank" in result["match_brief"]["match_justification"]
+    assert "clock changed" in result["message"]
+
+
+def render_fixture():
+    winner = {
+        **CANDIDATE, "name": "Lynnwood Food Bank", "pickup_window_hours": 5,
+        "time_margin_hours": 7, "tract_id": "fixture-tract",
+        "tract_poverty_pct": 12.4, "tract_no_vehicle_pct": 8.2,
+    }
+    ranking = {
+        "winner": winner, "min_buffer_hours": 0.25,
+        "viable_runners_up": [{"name": "Eligible Backup"}],
+        "eliminated_decoys": [{"name": "Edmonds Food Bank", "elimination_reasons": ["Closed on the pickup day"]}],
+    }
+    donor = {
+        "name": "Fixture Grocer", "posting_text": "Sealed shelf-stable bread",
+        "pallet_count": 0.5, "required_storage": "ambient",
+        "hours_remaining": 12, "deadline_at": "2026-10-21T03:00:00+00:00",
+    }
+    return ranking, donor
+
+
+def test_brief_facts_use_final_candidates_and_exact_buffer_math():
+    ranking, donor = render_fixture()
+    brief = render_brief(ranking, donor, BRIEF)
+    justification = brief["match_justification"]
+    assert "Eligible alternatives, in order: Eligible Backup." in justification
+    assert "Excluded: Edmonds Food Bank — Closed on the pickup day." in justification
+    eligible_text = justification.split("Eligible alternatives, in order: ", 1)[1].split(".", 1)[0]
+    assert "Edmonds" not in eligible_text
+    clock = brief["clock_action_plan"]
+    assert "Raw deadline margin before buffer: 7.00h" in clock
+    assert "Required coordination buffer: 0.25h" in clock
+    assert "margin after subtracting that buffer: 6.75h" in clock
+    assert donor["deadline_at"] in clock
+    assert "12.40% poverty" in brief["equity_rationale"]
+    assert "8.20% households without a vehicle" in brief["equity_rationale"]
+
+
+@pytest.mark.parametrize("tone", ["concise", "warm"])
+def test_every_outreach_keeps_all_confirmations_and_bounded_sms(tone):
+    from agent.broker import CONFIRMATION_QUESTIONS
+    ranking, donor = render_fixture()
+    brief = render_brief(ranking, donor, {"tone": tone, "confirmation_focus": ["pickup_eta"]})
+    for question in CONFIRMATION_QUESTIONS.values():
+        assert question in brief["drafted_email_outreach"]
+    sms = brief["drafted_sms_outreach"]
+    assert len(sms) <= 480
+    assert ranking["winner"]["name"] in sms and donor["name"] in sms
+    assert "0.50 pallets; ambient storage" in sms
+    assert donor["deadline_at"] in sms
+    for essential in ["acceptance", "storage", "capacity", "pickup ETA", "receiving hours", "transport"]:
+        assert essential in sms
+    assert "Full names and offer in email" in sms
+    assert "multiple SMS segments" in brief["sms_delivery_note"]
+    assert "has not been sent" in brief["drafted_email_outreach"]
+    assert "Monday" not in " ".join(brief.values())
+    assert "Tuesday" not in " ".join(brief.values())
+
+
+def test_long_sms_names_are_explicitly_shortened_without_losing_offer_or_questions():
+    ranking, donor = render_fixture()
+    ranking["winner"]["name"] = "A very long recipient organization name " * 10
+    donor["name"] = "A very long donor grocer name " * 6
+    donor["pallet_count"] = 10000
+    donor["deadline_at"] = "2026-10-21T03:00:00.123456+00:00"
+    donor["posting_text"] = "Unverified free-form offer must remain in the email."
+    brief = render_brief(ranking, donor, {"tone": "warm", "confirmation_focus": ["pickup_eta"]})
+    sms = brief["drafted_sms_outreach"]
+    assert len(sms) <= 480
+    assert sms.count("…") == 2
+    assert donor["deadline_at"] in sms
+    assert "10000.00 pallets; ambient storage" in sms
+    assert "receiving hours and transport" in sms
+    assert donor["posting_text"] not in sms
+    email = brief["drafted_email_outreach"]
+    assert ranking["winner"]["name"] in email and donor["name"] in email
+    assert donor["posting_text"] in email
+
+
+def test_missing_alternatives_and_indicators_are_not_invented():
+    ranking, donor = render_fixture()
+    ranking["viable_runners_up"] = []
+    ranking["winner"]["tract_poverty_pct"] = None
+    ranking["winner"]["tract_no_vehicle_pct"] = None
+    brief = render_brief(ranking, donor)
+    assert "No other eligible alternatives" in brief["match_justification"]
+    assert "No usable tract indicators" in brief["equity_rationale"]
+    assert "0.00%" not in brief["equity_rationale"]
+
+
+@pytest.mark.parametrize("payload", [
+    {"tone": "warm on Monday October20", "confirmation_focus": ["acceptance"]},
+    {"tone": "warm", "confirmation_focus": ["Edmonds Food Bank"]},
+    {"tone": "concise", "confirmation_focus": ["pickup_eta"], "drafted_email_outreach": "Pickup secured tomorrow Tuesday"},
+    {"tone": "warm", "confirmation_focus": []},
+    {"tone": "warm", "confirmation_focus": ["storage"] * 7},
+])
+def test_unbounded_model_facts_cannot_cross_outreach_contract(payload):
+    with pytest.raises(ValueError):
+        parse_outreach_plan(json.dumps(payload))
+
+
+@pytest.mark.asyncio
+async def test_hallucinated_brief_is_replaced_with_safe_factual_renderer():
+    hallucinated = {
+        "match_justification": "Edmonds is a viable alternative",
+        "operational_verification": "Verified capacity secured",
+        "clock_action_plan": "Monday October20 2026; 7h margin includes buffer",
+        "equity_rationale": "Invented 99% poverty",
+        "drafted_sms_outreach": "Confirmed delivery tomorrow Tuesday",
+        "drafted_email_outreach": "We booked Edmonds. No confirmation needed.",
+    }
+    result, _, _ = await execute(model=ScriptedModel(final_payload=hallucinated))
+    assert result["status"] == "draft"
+    assert result["outreach_mode"] == "template_fallback"
+    text = " ".join(result["match_brief"].values())
+    for unsafe in ["Edmonds", "Monday October20", "tomorrow Tuesday", "99%", "Verified capacity"]:
+        assert unsafe not in text
+    assert "Fixture Food Bank" in text
+    assert result["execution_trace"][-1]["facts_source"] == "final_deterministic_ranking"
