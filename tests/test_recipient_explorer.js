@@ -1,5 +1,5 @@
 // Offline interaction tests of the served UI and recipient explorer. No network,
-// credentials, cloud clients, timers or models are used by these tests.
+// credentials, cloud clients or models are used by these tests.
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -102,6 +102,7 @@ const media = {get matches() { return mobile; }, addEventListener() {}, removeEv
 const context = vm.createContext({
   document, window: {matchMedia: () => media, addEventListener() {}},
   console, Date, Number, JSON, navigator: {}, URL, URLSearchParams,
+  AbortController, setTimeout, clearTimeout,
   requestAnimationFrame: fn => fn(),
   fetch() { throw new Error('Profile interactions must never make a network request'); },
 });
@@ -377,3 +378,63 @@ assert.equal(context.buildRequest().deadline_at, reviewedDeadline,
   'Refreshing the drawer must retain the exact reviewed voice deadline');
 explorer.close();
 console.log('Recipient explorer: identity merge, provenance, unknowns, eligible fit, filters, exact clock, safe directions, stale clearing and keyboard/mobile focus passed.');
+
+require('node:test')('Explicit MCP evidence refresh stays separate from match decisions and rejects stale results', async () => {
+  filters();
+  setPayloads(city, match);
+  let reads = 0;
+  const before = JSON.stringify(match);
+  const response = (id, status = 'ready', extra = {}) => ({
+    status: {ready: 200, not_found: 404, unknown: 409, unavailable: 503}[status],
+    async text() { return JSON.stringify({
+      status, recipient_id: id, retrieved_at: '2026-10-20T18:00:00+00:00',
+      observation_date: null, requires_confirmation: true, operational_data_verified: false,
+      profile: {recipient_id: id, profile_source: 'generated', max_pallets: 99, cold_storage: 'commercial'},
+      ...extra,
+    }); },
+  });
+  context.fetch = async (url, options) => {
+    reads++;
+    assert.equal(url, '/api/recipients/1/evidence');
+    assert.equal(options.cache, 'no-store');
+    assert(options.signal);
+    return response('1');
+  };
+  explorer.select('1');
+  assert.equal(reads, 0, 'Opening a profile does not query cloud services');
+  await explorer.refreshEvidence();
+  assert.equal(reads, 1);
+  assert.match(content(node('recipient-source-evidence')), /99 pallets/);
+  assert.match(content(node('recipient-source-evidence')), /Availability still needs confirmation/);
+  assert.match(content(node('recipient-source-evidence')), /Not supplied/);
+  assert.equal(JSON.stringify(match), before, 'Source refresh cannot rewrite a match or extend its deadline');
+  assert.equal(explorer.mergedRecipients().find(row => row.recipient_id === '1').max_pallets, 4);
+
+  context.fetch = async () => response('2');
+  await explorer.refreshEvidence();
+  assert.match(content(node('recipient-source-evidence')), /unavailable/i, 'Mismatched identity fails closed');
+  context.fetch = async () => response('1', 'unknown');
+  await explorer.refreshEvidence();
+  assert.match(content(node('recipient-source-evidence')), /uniquely identify/);
+  context.fetch = async () => response('1', 'not_found');
+  await explorer.refreshEvidence();
+  assert.match(content(node('recipient-source-evidence')), /not found/);
+  context.fetch = async () => response('1', 'ready', {operational_data_verified: true});
+  await explorer.refreshEvidence();
+  assert.match(content(node('recipient-source-evidence')), /unavailable/i, 'A refresh never upgrades evidence to confirmation');
+
+  let resolveRead, signal;
+  context.fetch = (_, options) => { signal = options.signal; return new Promise(resolve => { resolveRead = resolve; }); };
+  const pendingRead = explorer.refreshEvidence();
+  explorer.select('2');
+  assert.equal(signal.aborted, true, 'Changing recipients aborts its pending read');
+  resolveRead(response('1'));
+  await pendingRead;
+  assert.doesNotMatch(content(node('recipient-source-evidence')), /99 pallets|read complete/i);
+  const closingRead = explorer.refreshEvidence();
+  explorer.close();
+  assert.equal(signal.aborted, true, 'Closing the drawer aborts its pending read');
+  resolveRead(response('2'));
+  await closingRead;
+  assert.equal(explorer.selectedId(), null);
+});

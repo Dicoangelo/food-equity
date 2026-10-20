@@ -555,17 +555,6 @@ def index_dashboard():
     <!-- Left Controls Panel -->
     <div class="offer-column">
 
-      <!-- Scenario Selector -->
-      <div id="scenario-panel" class="surface-card rounded-xl p-5 border border-line">
-        <h2 class="text-sm font-semibold uppercase tracking-wider text-muted mb-3 flex items-center gap-2">
-          <i class="fa-solid fa-bolt text-warning"></i> Try a retail rescue scenario
-        </h2>
-        <p class="text-xs text-muted mb-3">Choose an offer to fill the form. Review its assumptions before running a live match.</p>
-        <div class="flex flex-col gap-2" id="scenario-buttons">
-          <!-- Loaded by JS -->
-        </div>
-      </div>
-
       <!-- Donor Input Form -->
       <div id="offer-panel" tabindex="-1" class="surface-card rounded-xl p-5 border border-line flex flex-col gap-4">
         <h2 class="text-sm font-semibold uppercase tracking-wider text-muted flex items-center gap-2">
@@ -614,6 +603,17 @@ def index_dashboard():
           <span>Find a viable match</span>
         </button>
       </div>
+
+      <!-- Scenario Selector -->
+      <details id="scenario-panel" class="surface-card rounded-xl p-5 border border-line">
+        <summary class="text-sm font-semibold text-accent">
+          <i class="fa-solid fa-bolt text-warning"></i> Load an example offer · optional
+        </summary>
+        <p class="text-xs text-muted mb-3">Choose an offer to fill the form. Review its assumptions before running a live match.</p>
+        <div class="flex flex-col gap-2" id="scenario-buttons">
+          <!-- Loaded by JS -->
+        </div>
+      </details>
 
       <details id="voice-panel" class="surface-card rounded-xl p-5 border border-line">
         <summary class="text-sm font-semibold text-accent cursor-pointer">Talk through an offer · optional</summary>
@@ -1693,6 +1693,7 @@ def index_dashboard():
         setWorkflow('review');
         finishMatchProgress(canceled ? 'canceled' : 'error');
         document.getElementById('decoys-list').replaceChildren(textNode('p', 'No current result. Previous results have been cleared.'));
+        focusSection('review-panel');
       } finally {
         clearTimeout(requestTimer);
         activeMatchController = null;

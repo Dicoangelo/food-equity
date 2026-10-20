@@ -6,6 +6,8 @@ const RecipientExplorer = (() => {
   let returnFocus = null;
   let returnFocusRegion = null;
   let backdrop = null;
+  let evidenceRead = null;
+  let evidenceState = null;
   const inertBackground = new Map();
   const markers = new Set();
   const labels = {
@@ -19,6 +21,10 @@ const RecipientExplorer = (() => {
   const number = (value, suffix = '') => finite(value) ? `${value}${suffix}` : 'Unknown';
   const boolean = value => value === true ? 'Yes (profile)' : value === false ? 'No (profile)' : 'Unknown';
   const percent = value => finite(value) && value >= 0 && value <= 100 ? `${value.toFixed(1)}%` : 'Unknown';
+  const seattleTime = value => typeof value === 'string' && Number.isFinite(Date.parse(value))
+    ? new Intl.DateTimeFormat('en-US', {timeZone: 'America/Los_Angeles', month: 'short',
+      day: 'numeric', hour: 'numeric', minute: '2-digit', timeZoneName: 'short'}).format(new Date(value))
+    : 'Unknown';
   const rows = value => Array.isArray(value) ? value : [];
   const idOf = row => row && row.recipient_id != null && String(row.recipient_id).trim() !== '' ? String(row.recipient_id) : null;
   const mobile = () => typeof window.matchMedia === 'function' && window.matchMedia('(max-width:760px)').matches;
@@ -235,6 +241,11 @@ const RecipientExplorer = (() => {
         ? 'Organization identity comes from the starter data; operating details are generated and require confirmation.'
         : 'Profile provenance has not been established. Confirm identity and all operating details.', 'recipient-provenance'));
 
+    const evidence = section('Latest source evidence');
+    evidence.setAttribute('id', 'recipient-source-evidence');
+    container.appendChild(evidence);
+    renderSourceEvidence(evidence, row.recipient_id);
+
     const decision = section('Decision for this offer');
     decision.appendChild(badge(labels[row._decision], row._decision));
     decision.appendChild(textNode('p', row._decision === 'eligible'
@@ -316,6 +327,84 @@ const RecipientExplorer = (() => {
     } else confirmation.appendChild(textNode('p', 'Directions unavailable: a valid origin or recipient point was not supplied.', 'recipient-note'));
     container.appendChild(confirmation);
     updateModal();
+  }
+
+  function stopEvidenceRead() {
+    evidenceRead?.abort();
+    evidenceRead = null;
+    evidenceState = null;
+  }
+
+  function renderSourceEvidence(parent, id) {
+    parent.replaceChildren(textNode('h3', 'Latest source evidence'));
+    const state = evidenceState?.id === id ? evidenceState : null;
+    const button = textNode('button', state?.status === 'loading' ? 'Reading source…' : 'Refresh source evidence', 'action-secondary');
+    button.type = 'button';
+    button.disabled = state?.status === 'loading';
+    button.onclick = () => refreshEvidence();
+    parent.appendChild(button);
+    const status = textNode('p', state?.status === 'loading'
+      ? 'Reading this recipient through MCP from BigQuery…'
+      : state?.status === 'ready' ? 'Source read complete. Availability still needs confirmation.'
+      : state?.status === 'not_found' ? 'This recipient was not found in the source. The previous match has not been changed.'
+      : state?.status === 'unknown' ? 'The source could not uniquely identify a usable profile. Resolve the conflicting or missing evidence before acting.'
+      : state?.status === 'unavailable' ? 'Source evidence is unavailable. Retry this read or use the clearly dated match evidence below.'
+      : 'Read the source for this exact recipient. This does not rerun matching or contact anyone.', 'recipient-note');
+    status.setAttribute('role', 'status');
+    status.setAttribute('aria-live', 'polite');
+    parent.appendChild(status);
+    if (state?.status !== 'ready') return;
+    const data = state.payload, profile = data.profile;
+    appendFacts(parent, [
+      ['Database read', seattleTime(data.retrieved_at)],
+      ['Source observation date', data.observation_date || 'Not supplied'],
+      ['Source provenance', sourceLabel(profile)],
+      ['Storage in source', profile.cold_storage || 'Unknown'],
+      ['Capacity in source', number(profile.max_pallets, ' pallets')],
+      ['Receiving days in source', profile.service_days || 'Unknown'],
+      ['Freezer in source', boolean(profile.frozen_storage)],
+    ]);
+    parent.appendChild(textNode('p',
+      'A fresh database read does not verify current capacity, acceptance or collection. The evaluated proposal below keeps its original evidence; rerun the offer to evaluate source changes against the same deadline.',
+      'recipient-warning'));
+  }
+
+  async function refreshEvidence() {
+    const id = selected;
+    if (!id || evidenceRead) return;
+    const controller = new AbortController();
+    evidenceRead = controller;
+    evidenceState = {id, status: 'loading'};
+    renderSourceEvidence($('recipient-source-evidence'), id);
+    const timer = setTimeout(() => controller.abort(), 35000);
+    try {
+      const response = await fetch(`/api/recipients/${encodeURIComponent(id)}/evidence`, {
+        signal: controller.signal, headers: {Accept: 'application/json'}, cache: 'no-store',
+      });
+      if (![200, 404, 409, 503].includes(response.status)) throw new Error('Evidence read unavailable');
+      const body = await response.text();
+      if (body.length > 65536) throw new Error('Evidence read exceeded limit');
+      const data = JSON.parse(body);
+      const expectedStatus = {ready: 200, not_found: 404, unknown: 409, unavailable: 503};
+      if (!Object.hasOwn(expectedStatus, data.status) || expectedStatus[data.status] !== response.status ||
+          String(data.recipient_id) !== id ||
+          (data.status === 'ready' && (!data.profile || String(data.profile.recipient_id) !== id ||
+            data.requires_confirmation !== true || data.operational_data_verified !== false))) {
+        throw new Error('Evidence response does not belong to this recipient');
+      }
+      if (evidenceRead !== controller || selected !== id) return;
+      if (controller.signal.aborted) throw new Error('Evidence read timed out');
+      evidenceState = {id, status: data.status, payload: data};
+    } catch (_) {
+      if (evidenceRead !== controller || selected !== id) return;
+      evidenceState = {id, status: 'unavailable'};
+    } finally {
+      clearTimeout(timer);
+      if (evidenceRead === controller) {
+        evidenceRead = null;
+        if (selected === id) renderSourceEvidence($('recipient-source-evidence'), id);
+      }
+    }
   }
 
   function renderCompare() {
@@ -441,6 +530,7 @@ const RecipientExplorer = (() => {
   function select(id, opener) {
     id = id == null ? null : String(id);
     if (!mergedRecipients().some(row => row.recipient_id === id)) return;
+    if (selected !== id) stopEvidenceRead();
     selected = id;
     returnFocus = opener || document.activeElement;
     returnFocusRegion = $('recipient-compare')?.contains?.(returnFocus) ? 'compare' : 'list';
@@ -454,6 +544,7 @@ const RecipientExplorer = (() => {
   }
   function close() {
     const previousId = selected;
+    stopEvidenceRead();
     selected = null;
     $('recipient-detail')?.classList.add('hidden');
     updateModal();
@@ -490,6 +581,6 @@ const RecipientExplorer = (() => {
     }
   });
   window.addEventListener?.('resize', updateModal);
-  return {refresh, select, close, mergedRecipients, visibleRecipients, comparisonRows, scoreComponents,
+  return {refresh, select, close, refreshEvidence, mergedRecipients, visibleRecipients, comparisonRows, scoreComponents,
     markerSelected: id => selected !== null && selected === String(id), markMarker, selectedId: () => selected};
 })();
