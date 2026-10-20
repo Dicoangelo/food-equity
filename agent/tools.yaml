@@ -72,3 +72,63 @@ parameters:
   - name: recipient_id
     type: string
     description: One canonical exact recipient ID, never a name, SQL, table or URL.
+---
+# FastAPI uses container port 8080. This source needs no auth and cannot leave loopback.
+# Toolbox v1.14 checks explicit allowed ranges before custom blocked ranges.
+kind: source
+name: foodkeeper_loopback
+type: http
+baseUrl: http://127.0.0.1:8080
+timeout: 5s
+returnFullError: false
+allowPrivateNetworks: false
+allowedIpRanges:
+  - 127.0.0.1/32
+customBlockedIpRanges:
+  - 0.0.0.0/0
+  - ::/0
+---
+kind: tool
+name: lookup_shelf_life
+type: http
+source: foodkeeper_loopback
+method: GET
+path: /api/foodkeeper
+description: >-
+  Read pinned FoodKeeper consumer storage guidance for one product term.
+  Returns product options and unresolved product/state/history questions.
+  Never determines remaining freshness, safety clearance or a pickup deadline.
+annotations:
+  readOnlyHint: true
+  destructiveHint: false
+queryParams:
+  - name: query
+    type: string
+    description: One literal product term of 2–120 characters, not a mixed-food posting.
+---
+kind: tool
+name: get_tract_equity
+type: bigquery-sql
+source: seattle_food_db
+description: >-
+  Read one exact Washington tract's ACS-derived starter snapshot.
+  Aggregate neighborhood indicators do not establish recipient service area,
+  current demand, operational availability or any individual's circumstances.
+annotations:
+  readOnlyHint: true
+  destructiveHint: false
+statement: |
+  SELECT geo_id AS tract_id, tract_lat, tract_lon, total_pop, median_income,
+         poverty_rate, no_vehicle_rate, assistance_rate,
+         CASE WHEN poverty_rate BETWEEN 0 AND 1
+                   AND no_vehicle_rate BETWEEN 0 AND 1
+              THEN 0.5 * poverty_rate + 0.5 * no_vehicle_rate
+              ELSE NULL END AS need_score
+  FROM `${GOOGLE_CLOUD_PROJECT}.a4i_food.tract_demographics`
+  WHERE geo_id = @tract_id
+    AND REGEXP_CONTAINS(@tract_id, r'^53[0-9]{9}$')
+  LIMIT 2
+parameters:
+  - name: tract_id
+    type: string
+    description: Exact 11-digit Washington tract ID already associated with a retrieved recipient.
