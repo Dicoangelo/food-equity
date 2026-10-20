@@ -131,6 +131,82 @@ class ConstraintTests(unittest.TestCase):
         self.assertFalse(third["viable"])
         self.assertTrue(fourth["viable"])
 
+    def test_schedule_qualifiers_require_confirmation_instead_of_guessing_open_or_closed(self):
+        schedules = (
+            "Tuesday by appointment only",
+            "Not Tuesday",
+            "Last Tuesday of the month",
+            "First and last Tuesday of the month",
+            "Tuesday every other week",
+            "Tuesday 9am to 5pm",
+            "Tuesday except holidays",
+            "Third Tuesday of the month by appointment",
+            "Third Tuesday of the month except holidays",
+            "Tuesday or Wednesday",
+            "Monday by appointment only",
+            "Monday-Saturday",
+        )
+        for schedule in schedules:
+            with self.subTest(schedule=schedule):
+                result = self.check(candidate(service_days=schedule))
+                self.assertEqual(result["status"], "needs_confirmation")
+                self.assertFalse(result["viable"])
+                self.assertIn("Receiving schedule requires confirmation.", result["confirmations_required"])
+                self.assertNotIn("service_day_closed", result["reason_codes"])
+
+    def test_recognized_weekly_lists_and_aliases_preserve_open_and_closed_days(self):
+        schedules = (
+            ("Tuesday", True, False),
+            ("Tuesday and Thursday", True, False),
+            ("Monday, Tuesday, and Friday", True, False),
+            (" every  Tuesday, Thursday ", True, False),
+            ("Sunday, Monday", False, True),
+            ("weekdays", True, False),
+            ("Monday-Friday", True, False),
+            ("Monday through Friday", True, False),
+            ("daily", True, True),
+            ("every day", True, True),
+            ("everyday", True, True),
+            ("7 days", True, True),
+            ("seven days", True, True),
+        )
+        for schedule, tuesday_open, sunday_open in schedules:
+            for when, expected in ((NOW, tuesday_open),
+                                   (datetime(2026, 10, 25, 16, tzinfo=timezone.utc), sunday_open)):
+                with self.subTest(schedule=schedule, when=when):
+                    result = self.matcher.evaluate_constraints(
+                        candidate(service_days=schedule, pickup_eta_hours=0), evaluated_at=when,
+                    )
+                    self.assertEqual(result["status"], "eligible" if expected else "rejected")
+                    self.assertEqual("service_day_closed" in result["reason_codes"], not expected)
+
+    def test_every_supplied_schedule_retains_its_documented_weekly_or_monthly_pattern(self):
+        data = json.loads((Path(__file__).parents[1] / "data/profile_components.json").read_text())
+        expected_open_dates = {
+            "Monday": {5, 12, 19, 26},
+            "Tuesday": {6, 13, 20, 27},
+            "Wednesday": {7, 14, 21, 28},
+            "Thursday": {1, 8, 15, 22, 29},
+            "Friday": {2, 9, 16, 23, 30},
+            "Saturday": {3, 10, 17, 24, 31},
+            "Monday, Wednesday, Friday": {2, 5, 7, 9, 12, 14, 16, 19, 21, 23, 26, 28, 30},
+            "Tuesday, Thursday": {1, 6, 8, 13, 15, 20, 22, 27, 29},
+            "Monday, Tuesday, Wednesday, Thursday, Friday": set(range(1, 32)) - {3, 4, 10, 11, 17, 18, 24, 25, 31},
+            "Sunday, Monday, Tuesday, Wednesday, Thursday, Friday, Saturday": set(range(1, 32)),
+            "Second and fourth Wednesday of the month": {14, 28},
+            "First Saturday of the month": {3},
+        }
+        self.assertEqual(set(data["service_days"]), set(expected_open_dates))
+        for schedule in data["service_days"]:
+            for day in range(1, 32):
+                with self.subTest(schedule=schedule, october_day=day):
+                    result = self.matcher.evaluate_constraints(
+                        candidate(service_days=schedule, pickup_eta_hours=0),
+                        evaluated_at=datetime(2026, 10, day, 16, tzinfo=timezone.utc),
+                    )
+                    self.assertEqual(result["status"],
+                                     "eligible" if day in expected_open_dates[schedule] else "rejected")
+
 
 class RankingTests(unittest.TestCase):
     def setUp(self):
@@ -149,6 +225,17 @@ class RankingTests(unittest.TestCase):
         result = self.rank([candidate(max_pallets=None)])
         self.assertIsNone(result["winner"])
         self.assertEqual(len(result["pending_confirmation"]), 1)
+        self.assertEqual(result["eliminated_decoys"], [])
+
+    def test_qualified_schedule_is_pending_and_cannot_be_winner_or_backup(self):
+        result = self.rank([
+            candidate(recipient_id=1, service_days="Tuesday by appointment only", distance=0.01),
+            candidate(recipient_id=2, service_days="Tuesday", distance=0.4),
+        ])
+        self.assertEqual(result["winner"]["recipient_id"], 2)
+        self.assertEqual(result["viable_runners_up"], [])
+        self.assertEqual([row["recipient_id"] for row in result["pending_confirmation"]], [1])
+        self.assertEqual(result["pending_confirmation"][0]["constraint_status"], "needs_confirmation")
         self.assertEqual(result["eliminated_decoys"], [])
 
     def test_two_distinct_fallbacks_without_mutating_input(self):

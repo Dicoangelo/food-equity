@@ -174,21 +174,31 @@ def _open_on(service_days, when):
     """Parse the starter's weekly/ordinal schedules; unfamiliar text stays unknown."""
     if not isinstance(service_days, str) or not service_days.strip():
         return None
-    text = service_days.lower().strip()
+    text = " ".join(service_days.lower().split())
     if text in {"daily", "every day", "everyday", "7 days", "seven days"}:
         return True
     if text in {"weekdays", "monday-friday", "monday through friday"}:
         return when.weekday() < 5
-    named = {i for i, day in enumerate(WEEKDAYS) if re.search(r"\b" + day + r"\b", text)}
-    if not named:
-        return None
+
+    # Match the entire schedule before interpreting any day. Finding "Tuesday"
+    # alone must not erase "not", "by appointment", hours or monthly qualifiers.
+    weekday = "(?:" + "|".join(WEEKDAYS) + ")"
+    separator = r"(?:\s*,\s*(?:and\s+)?|\s+and\s+)"
+    if re.fullmatch(rf"(?:every\s+)?{weekday}(?:{separator}{weekday})*", text):
+        return WEEKDAYS[when.weekday()] in re.findall(weekday, text)
+
     ordinals = {word: i for i, word in enumerate(("first", "second", "third", "fourth", "fifth"), 1)}
-    occurrences = {i for word, i in ordinals.items() if re.search(r"\b" + word + r"\b", text)}
-    if occurrences:
-        return when.weekday() in named and (when.day - 1) // 7 + 1 in occurrences if len(named) == 1 else None
-    if "-" in text or "through" in text or "except" in text:
-        return None
-    return when.weekday() in named
+    ordinal = "(?:" + "|".join(ordinals) + ")"
+    monthly = re.fullmatch(
+        rf"(?P<ordinals>{ordinal}(?:{separator}{ordinal})*)\s+"
+        rf"(?P<weekday>{weekday})(?:\s+of\s+the\s+month)?",
+        text,
+    )
+    if monthly:
+        occurrences = {ordinals[word] for word in re.findall(ordinal, monthly["ordinals"])}
+        return (monthly["weekday"] == WEEKDAYS[when.weekday()]
+                and (when.day - 1) // 7 + 1 in occurrences)
+    return None
 
 
 class SurplusMatcher:
