@@ -13,6 +13,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from agent.broker import FoodBrokerAgent, parse_candidates, parse_outreach_plan, render_brief
 
 
+@pytest.fixture(autouse=True)
+def offline_context_evidence(monkeypatch):
+    class OfflineEvidence:
+        async def collect(self, **kwargs):
+            return {"status": "unavailable", "foodkeeper": [], "tract_equity": [],
+                    "execution_trace": [], "deadline_modified": False}
+    monkeypatch.setattr("agent.broker.ContextEvidenceService", OfflineEvidence)
+
+
 BRIEF = {
     "tone": "concise",
     "confirmation_focus": ["pickup_eta", "storage"],
@@ -125,6 +134,7 @@ async def test_progress_reports_actual_boundaries_without_offer_or_recipient_dat
         ("connecting", {}),
         ("retrieving", {}),
         ("checking_constraints", {"candidate_count": 1}),
+        ("enriching_evidence", {}),
         ("preparing_brief", {}),
         ("finalizing", {}),
     ]
@@ -145,6 +155,7 @@ async def test_no_match_progress_never_claims_a_brief_is_being_prepared():
         ("connecting", {}),
         ("retrieving", {}),
         ("checking_constraints", {"candidate_count": 0}),
+        ("enriching_evidence", {}),
         ("finalizing", {}),
     ]
 
@@ -179,7 +190,7 @@ async def test_stalled_observer_is_bounded_and_cancelled(monkeypatch):
     assert result["status"] == "success"
     assert toolset.closed
     assert cancelled == [
-        "connecting", "retrieving", "checking_constraints", "preparing_brief", "finalizing"
+        "connecting", "retrieving", "checking_constraints", "enriching_evidence", "preparing_brief", "finalizing"
     ]
 
 
