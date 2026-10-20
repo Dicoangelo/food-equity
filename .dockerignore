@@ -1,0 +1,14 @@
+.git
+.venv
+venv
+__pycache__
+*.pyc
+.pytest_cache
+.env
+*.key
+credentials.json
+service-account*.json
+data
+notebooks
+tests
+evidence
