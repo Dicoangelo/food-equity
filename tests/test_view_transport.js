@@ -53,6 +53,7 @@ async function run() {
   const initialDraft={type:'draft',context_only:true,draft_id:'transport-draft',draft_version:0,
     ready_for_review:true,missing_fields:[],fields:{...original}};
   socket.emit(initialDraft);
+  assert.equal(node('voice-apply').disabled,true,'Initial form context is not an agent proposal');
   await note('Why this recipient?');assert.equal(node('voice-send').disabled,false,'Corrections remain available during a turn');
   const turnA=startTurn(socket,'turn-A');
   socket.emit({type:'transcript',role:'model',text:'Unowned text must be ignored'});
@@ -146,8 +147,13 @@ async function run() {
   socket.emit({type:'turn_complete',...viewRaceB});context.stopVoiceSession();
   assert.match(content(node('voice-action-receipt')),/Session ended/);
 
-  // One permission grant survives audio interruption and a second spoken turn.
-  socket=await connect(true);assert.equal(micRequests,1);
+  // A typed session can add a microphone without discarding its connection or deadline.
+  socket=await connect();const beforeMicrophone=sockets.length;
+  assert.equal(node('voice-start').disabled,false);
+  assert.equal(await context.startVoiceSession(true),true);
+  assert.equal(sockets.length,beforeMicrophone,'Adding audio reuses the existing typed session');
+  assert.equal(micRequests,1);
+  assert.equal(node('voice-start').textContent,'Microphone on');
   assert.equal(socket.sent[1].fields.pallet_count,2);assert.equal(socket.sent[1].fields.deadline_at,original.deadline_at);
   const lifetimeTimer=state('timer'),base=socket.sent.length;
   pulse(0,100);assert.equal(socket.sent.length,base,'Silence cannot start or overlap a provider turn');

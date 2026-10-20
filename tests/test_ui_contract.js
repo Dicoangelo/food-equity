@@ -432,7 +432,16 @@ async function testVoiceIntake() {
   const fields={...scenario,posting_text:attack,deadline_at:new Date(Date.now()+3*3600000).toISOString(),hours_remaining:3};
   const draft={type:'draft',context_only:true,draft_id:'draft-one',draft_version:2,fields,missing_fields:[],ready_for_review:true,deadline_changed:true};
   socket.receive(draft);
-  assert.equal(nodes.get('voice-apply').disabled,false);
+  assert.equal(nodes.get('voice-apply').disabled,true,'Seeded form context must not be presented as an agent proposal');
+  assert.equal(nodes.get('voice-review-title').textContent,'Current offer context');
+  assert.match(nodes.get('voice-missing').textContent,/No agent changes/);
+  assert.equal(nodes.get('voice-draft-deadline').getAttribute('datetime'),fields.deadline_at);
+  assert.match(nodes.get('voice-draft-deadline').textContent,/Seattle/);
+  assert.match(nodes.get('voice-draft-time-left').textContent,/remaining/);
+  context.applyVoiceDraft();assert.equal(socket.closed,undefined,'Context-only data cannot apply or close the session');
+  context.renderVoiceDraft({...draft,context_only:false,draft_version:3});
+  assert.equal(nodes.get('voice-apply').disabled,false,'An acknowledged valid proposal can be reviewed and applied');
+  assert.equal(nodes.get('voice-review-title').textContent,'Review proposed changes');
   assert.equal(nodes.get('voice-draft').children[1].textContent,'Available surplus: '+attack);
   context.renderVoiceDraft({...draft,draft_version:1,fields:{...fields,posting_text:'stale offer'}});
   context.renderVoiceDraft({...draft,draft_id:'another-draft',draft_version:3,fields:{...fields,posting_text:'wrong session'}});

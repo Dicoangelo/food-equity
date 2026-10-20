@@ -772,8 +772,10 @@ def index_dashboard():
         <div id="voice-transcript" class="voice-transcript text-xs text-secondary mt-3" aria-label="Session transcript"></div>
         <div id="voice-action-receipt" class="text-xs text-secondary mt-3" role="status" aria-live="polite"></div>
         <div id="voice-review" class="hidden border-t border-line mt-3 pt-3">
-          <h3 class="text-sm font-semibold text-ink">Review proposed offer fields</h3>
+          <h3 id="voice-review-title" class="text-sm font-semibold text-ink">Current offer context</h3>
           <div id="voice-draft" class="voice-draft text-xs text-secondary mt-2"></div>
+          <p class="text-xs text-secondary mt-2">Pickup deadline: <time id="voice-draft-deadline">Not supplied</time></p>
+          <p id="voice-draft-time-left" class="text-xs text-secondary"></p>
           <p id="voice-missing" role="status" class="text-xs text-warning mt-2"></p>
           <p class="text-xs text-muted mt-2">Check the exact deadline, pickup origin, quantity and storage before applying. Applying stops the session and updates the form; it does not request a match.</p>
           <button id="voice-apply" type="button" class="action-secondary mt-2" disabled onclick="applyVoiceDraft()">Apply reviewed draft to form</button>
@@ -956,12 +958,13 @@ def index_dashboard():
     }
     function refreshVoiceControls() {
       const available = voice.enabled && !matchInFlight;
-      document.getElementById('voice-start').disabled = !available || !!voice.socket || voice.starting;
+      document.getElementById('voice-start').disabled = !available || !!voice.stream || voice.starting || (!!voice.socket && !voice.ready);
+      document.getElementById('voice-start').textContent = voice.stream ? 'Microphone on' : 'Start microphone';
       document.getElementById('voice-stop').disabled = !voice.socket && !voice.starting;
       document.getElementById('voice-send').disabled = !available || voice.starting;
       document.getElementById('voice-send').textContent = voice.recovering || voice.awaitingRecovery ? 'Queue correction' : 'Send note';
       document.getElementById('voice-text').disabled = !available;
-      document.getElementById('voice-apply').disabled = matchInFlight || !voice.draft?.ready_for_review
+      document.getElementById('voice-apply').disabled = matchInFlight || voice.draft?.context_only === true || !voice.draft?.ready_for_review
         || voiceDraftErrors(voice.draft).length > 0;
     }
     async function loadVoiceConfig() {
@@ -1009,19 +1012,33 @@ def index_dashboard():
       box.replaceChildren();
       const fields = message.fields || {};
       const labels = {donor_name:'Donor',posting_text:'Available surplus',required_storage:'Storage',pallet_count:'Pallets',
-        donor_lat:'Origin latitude',donor_lon:'Origin longitude',deadline_at:'Exact pickup deadline',hours_remaining:'Hours remaining at draft time'};
+        donor_lat:'Origin latitude',donor_lon:'Origin longitude'};
       Object.entries(labels).forEach(([key,label]) => {
         const value = fields[key];
         box.appendChild(textNode('p',`${label}: ${value == null ? 'Not supplied' : String(value).slice(0,4000)}`));
       });
       const errors = voiceDraftErrors(message);
       const missing = Array.isArray(message.missing_fields) ? message.missing_fields.slice(0,12).map(value=>String(value).slice(0,100)) : [];
-      document.getElementById('voice-missing').textContent = message.ready_for_review && !errors.length
+      document.getElementById('voice-review-title').textContent = message.context_only === true ? 'Current offer context' : 'Review proposed changes';
+      document.getElementById('voice-missing').textContent = message.context_only === true
+        ? 'Copied from your form for context. No agent changes have been proposed or applied.'
+        : message.ready_for_review && !errors.length
         ? `Ready for your review.${message.deadline_changed ? ' The proposed deadline changed; confirm it with the donor.' : ''}`
         : `Still needs confirmation: ${[...new Set([...missing,...errors])].join(', ') || 'the intake agent has not completed this draft'}.`;
       document.getElementById('voice-review').classList.remove('hidden');
+      refreshVoiceDraftClock();
       refreshVoiceControls();
       return true;
+    }
+    function refreshVoiceDraftClock() {
+      if (!voice.draft) return;
+      const deadline=voice.draft.fields?.deadline_at, presentation=deadlinePresentation(deadline);
+      const time=document.getElementById('voice-draft-deadline');
+      time.textContent=presentation ? `${presentation.local} (Seattle)` : 'Not supplied';
+      if (presentation) { time.setAttribute('datetime',deadline);time.setAttribute('title',deadline); }
+      else { time.removeAttribute('datetime');time.removeAttribute('title'); }
+      document.getElementById('voice-draft-time-left').textContent=presentation?.remaining || 'Confirm the pickup deadline with the donor.';
+      refreshVoiceControls();
     }
     function appendVoiceTranscript(message) {
       if (!['user','model'].includes(message.role) || typeof message.text !== 'string') return;
@@ -1228,9 +1245,23 @@ def index_dashboard():
       voice.source.connect(voice.worklet);
       voice.worklet.connect(ctx.destination); // The worklet emits silence; no microphone loopback.
       voiceStatus('Microphone is on. Describe or clarify the offer; Stop ends audio capture.');
+      refreshVoiceControls();
     }
     async function startVoiceSession(useMicrophone = false) {
-      if (!voice.enabled || matchInFlight || voice.starting || voice.socket) return false;
+      if (!voice.enabled || matchInFlight || voice.starting) return false;
+      // A typed session can add audio with a separate, explicit microphone gesture.
+      if (voice.socket) {
+        if (!useMicrophone || !voice.ready || voice.stream) return false;
+        const generation=voice.generation;
+        voice.starting=true;refreshVoiceControls();
+        try { await startVoiceMicrophone(generation);return generation===voice.generation; }
+        catch (_) {
+          if (generation===voice.generation) stopVoiceSession('Microphone unavailable or permission denied. Send a typed note to continue without audio.');
+          return false;
+        } finally {
+          if (generation===voice.generation) { voice.starting=false;refreshVoiceControls(); }
+        }
+      }
       const generation = ++voice.generation;
       voice.starting = true;
       voice.draft = null;
@@ -1380,7 +1411,7 @@ def index_dashboard():
     }
     function applyVoiceDraft() {
       const draft = voice.draft;
-      if (matchInFlight || !draft?.ready_for_review || voiceDraftErrors(draft).length) {
+      if (matchInFlight || draft?.context_only === true || !draft?.ready_for_review || voiceDraftErrors(draft).length) {
         voiceStatus('The draft is incomplete or its deadline has passed. Confirm the missing details before applying.');
         refreshVoiceControls(); return;
       }
@@ -1396,7 +1427,8 @@ def index_dashboard():
       offerClock.apply(fields.deadline_at, fields.hours_remaining);
       document.getElementById('origin-note').textContent = `Reviewed origin: ${fields.donor_lat}, ${fields.donor_lon}. Confirm the actual pickup location; any demo coordinates remain approximate.`;
       refreshDeadlineDisplay();
-      setStatus('Voice draft applied for review. The exact deadline is preserved. No match or outreach has been requested.');
+      reviewState('idle','Draft applied — review the offer','Confirm quantity, storage and pickup details, then select Find a viable match.');
+      setStatus('Draft applied. Review the fields below, then select Find a viable match. The exact pickup deadline is preserved; no match or outreach has started.');
       if (typeof RecipientExplorer !== 'undefined') RecipientExplorer.refresh();
       focusSection('offer-panel');
     }
@@ -1722,6 +1754,7 @@ def index_dashboard():
       return {local, remaining, expired};
     }
     function refreshDeadlineDisplay() {
+      refreshVoiceDraftClock();
       // Presentation reads the existing clock; it never establishes or extends it.
       const presentation = deadlinePresentation(offerClock.deadline);
       const panel = document.getElementById('review-clock');
