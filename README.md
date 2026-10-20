@@ -19,9 +19,11 @@ gcloud run services proxy seattle-food-broker \
 
 Keep that terminal running and open **Web Preview → Preview on port 8080**. On a local machine with existing authorized access, the same proxy serves `http://127.0.0.1:8080`. Direct team-demo access does not require the proxy. Credentials and tokens do not belong in this repository, screenshots or shared notes.
 
-**Verified release snapshot, 20 October 2026:** source `9027ea5`, revision `seattle-food-broker-00004-sxn`. Authenticated smoke checks passed for health, city data, FoodKeeper, a real bakery ADK/MCP match and a cold-capacity refusal. The bakery check returned one proposal plus one alternative; this is execution evidence, not a guarantee of future matches. The city response contained 389 tract points and 119 profiles. Team `main` is `0c952f3`, with PRs #7 and #8 merged; the newer Live intake work is not part of this verified release.
+**Verified release, 20 October 2026:** source `d8f9c2159efa60f4e7b07324534fc509dd100d17`, revision `seattle-food-broker-00013-fum`, promoted to **100% traffic**. Before promotion, the exact candidate passed all five core checks: health, city data, FoodKeeper, real bakery ADK/MCP matching with one backup, and cold-capacity refusal. City data returned 389 tract points and 119 profiles. Receipts: workspace `research/LIVE-CORE-CANDIDATE-d8f9c21.json` and `research/LIVE-PROMOTION-d8f9c21.json`. Team `main` is `b6586cd`; [PR #10](https://github.com/niatalwalkar/food-equity/pull/10) merged at `18:00:12Z` on 20 October, following PR #9. Ownership transfer is parked and the fork is unchanged.
 
-**Voice status:** a Gemini 3.8 Live audio probe under the runtime identity succeeded in `us-central1`. Browser intake integration is in progress and defaults off; the deployed WebSocket, microphone and end-to-end draft review still need release verification under the chosen public-demo access setting. The existing form remains the working entry path. No GitHub Pages deployment is claimed here.
+**Live intake and recipient explorer:** the unchanged typed Live smoke passed on the combined candidate: a two-pallet draft, exact deadline preserved, completed response, 228,482 generated-audio bytes and four transcript events; no match was automatically requested. After promotion, the same smoke also passed on the **public URL** (309,120 audio bytes, six transcript events, deadline preserved, no match request; `research/LIVE-INTAKE-PUBLIC-d8f9c21.json`). Sparse-patch predecessor `c60faa7` passed twice beforehand. Browser checks verified reviewed Apply followed by a separate match, the linked winner profile and eligible filter, a 390px phone modal and no overflow at 320px. Combined validation: **245 Python tests and both Node suites passed**. Physical microphone capture/playback remains unverified; typed intake and the standard form remain available.
+
+**Team portal:** PR #9 is merged, but GitHub Pages is disabled (`has_pages=false`) and [workflow run 39467685689 failed](https://github.com/niatalwalkar/food-equity/actions/runs/39467685689). A repository admin must select **Settings → Pages → GitHub Actions**. Use the working Cloud Run link above; no published Pages URL is claimed.
 
 ## Challenge and demo
 
@@ -29,7 +31,7 @@ A Seattle grocer has mixed surplus and only hours to move it. A semantically rel
 
 1. Choose the bakery, urgent chilled or capacity-stress preset. Review quantity, storage, actual pickup origin and donor deadline.
 2. Run matching. Inspect the proposal, honest no-match or unresolved facts; inspect rejected candidates and clock margins.
-3. Review the map's aggregate neighborhood indicators and approximate recipient locations.
+3. Search/filter the linked recipient list and map, open the winner's profile and compare eligible backups. Inspect storage, capacity, provenance, deadline and offer-fit components; the score is specific to this offer, not a charity rating.
 4. Copy the Match Brief or outreach draft and confirm operations with the recipient. **The app sends nothing, reserves nothing and dispatches nothing.**
 
 The bakery example uses source posting 3: “roughly 200 loaves of day-old bread and pastries from three store locations,” with an explicit **hypothetical one-pallet** capacity test and a 24-hour donor window. It does not convert loaves or crates into pallets. A chilled offer illustrates refrigeration/clock gates; a full-lot stress offer illustrates capacity rejection. Split-load optimization is not implemented.
@@ -45,7 +47,7 @@ Browser form → FastAPI → ADK Runner / Gemini 2.5 Flash on Vertex
 
 | Layer | Implementation |
 |---|---|
-| Web/UI | FastAPI with a same-origin HTML/JavaScript interface; Leaflet/OpenStreetMap |
+| Web/UI | FastAPI with a same-origin interface; linked Leaflet/OpenStreetMap recipient explorer and phone profile sheet |
 | Container | Python 3.12; official MCP Toolbox 1.14.0; supervised API and Toolbox processes |
 | Agent | `google-adk==2.12.0`, `google-genai==2.31.0`; broker `gemini-2.5-flash` in `us-east1` |
 | Retrieval | Team-operated Google MCP Toolbox; parameterized read-only `vector_search_recipients`, top 12, COSINE |
@@ -84,7 +86,8 @@ agent/matcher.py             Pure feasibility, acceptance, clock and ranking log
 agent/tools.yaml             Read-only BigQuery MCP tool configuration
 agent/city.py                Bounded map-data reads and cache
 agent/foodkeeper.py          Advisory reference lookup
-agent/live_intake.py         Optional voice draft adapter; integration in progress
+agent/live_intake.py         Optional Gemini 3.8 Live draft adapter with validated sparse edits
+agent/ui/                    Linked recipient explorer JavaScript and CSS
 data/                       FoodKeeper and starter profile components
 notebooks/                  Original exploration and snapshot notebooks
 bq/                         Legacy embedding proposal and single-profile diagnostic
@@ -109,6 +112,7 @@ source .venv/bin/activate
 python -m pip install -r requirements-dev.txt
 python -m pytest tests -q
 node tests/test_ui_contract.js
+node tests/test_recipient_explorer.js
 ```
 
 These tests use mocks/scripted model boundaries and do not establish cloud access. For the full local stack, ADC must already be available and the official Toolbox 1.14.0 binary must be installed for the host architecture. Do not export lab credentials into files. The Docker image already includes Toolbox.
@@ -135,4 +139,4 @@ After deployment, run `python scripts/verify_live_release.py --expected-revision
 
 **Do not run `scripts/load.sh` or notebook replacement cells as deployment setup.** They can replace shared tables. `bq/01_embed_profiles.sql` is an isolated, unexecuted legacy `text-embedding-004`/768-dimensional proposal, incompatible with the production corpus. `bq/02_equity_audit.sql` is a read-only selected-profile diagnostic, not the ten-posting audit.
 
-Firestore reservations, decline-state automation, A2A partner negotiation, incentives, verified delivery accounting and production routing are future work. See the [A2A design](docs/A2A-RESCUE-EXCHANGE-PRD.md) and [map/profile plan](docs/MAP-PROFILE-PLAN.md); neither is a deployed feature claim.
+Firestore reservations, decline-state automation, A2A partner negotiation, incentives, verified delivery accounting and production routing remain future work. See the [A2A design](docs/A2A-RESCUE-EXCHANGE-PRD.md) and [map/profile research](docs/MAP-PROFILE-PLAN.md). The linked recipient explorer is implemented; road routing and operational availability are unverified.

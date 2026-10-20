@@ -1,8 +1,27 @@
 # Gemini Live — bounded voice intake
 
-**Implementation snapshot: 20 October 2026.** Dico selected `gemini-3.8-live` and explicitly authorized public access to the hackathon demo. The service-specific public binding is a release-coordinator action; its successful receipt is separate from this document. Cloud Run and the existing broker remain in `us-east1`; the separate Live connection uses `LIVE_VERTEX_LOCATION=us-central1` in the same project, `qwiklabs-gcp-04-b992b9561e32`. Backend Google credentials remain server-side.
+**Implementation snapshot: 20 October 2026.** Dico selected `gemini-3.8-live` and explicitly authorized public access to the hackathon demo. The service-only public invoker binding is verified; backend credentials remain separate from public browser access. Cloud Run and the existing broker remain in `us-east1`; the separate Live connection uses `LIVE_VERTEX_LOCATION=us-central1` in the same project, `qwiklabs-gcp-04-b992b9561e32`. Backend Google credentials remain server-side.
 
-The coordinator verified model access under the existing Cloud Run runtime service account: job `seattle-live38-probe-9027`, execution `qg9qd`, returned `connected=true`, `audio_bytes=33122`, `ok=true` in `us-central1`. Workspace receipt: `research/LIVE38-PROBE-9027.json`. That proves the synthetic audio turn; full browser/typed-tool integration still requires its own receipt.
+The coordinator verified model access under the existing Cloud Run runtime service account: job `seattle-live38-probe-9027`, execution `qg9qd`, returned `connected=true`, `audio_bytes=33122`, `ok=true` in `us-central1`. Workspace receipt: `research/LIVE38-PROBE-9027.json`. That proves the synthetic audio turn, not microphone capture or reliable offer editing.
+
+
+## Verified combined release
+
+Source `d8f9c2159efa60f4e7b07324534fc509dd100d17`, exact revision `seattle-food-broker-00013-fum`, was promoted to **100% traffic** after candidate checks. The intake uses `gemini-3.8-live` in `us-central1`; the established ADK broker stays in `us-east1`. PR #10 merged to team `main` at `b6586cd` after this promotion.
+
+| Evidence | Observed result |
+|---|---|
+| Public-origin confirmation | After promotion at `17:58:07Z`, the unchanged script passed on the public URL: ready, draft updated, exact deadline preserved and response complete; 309,120 audio bytes/six transcript events; no match request. |
+| Combined Live smoke | Original unchanged typed script passed: draft updated to two pallets, exact deadline preserved, completed response, 228,482 generated-audio bytes and four transcript events; no match request. |
+| Earlier sparse-patch checks | `c60faa7` passed the same script twice sequentially: 242,880 bytes/four events and 279,362 bytes/five events, with draft/deadline/response assertions all true. |
+| Combined core | All five candidate checks passed: health, city, FoodKeeper, real ADK/MCP bakery success with backup, cold-capacity refusal. |
+| Browser boundary | Typed draft → reviewed Apply → separate real match was observed; Apply alone did not match. Combined recipient UI passed winner profile/filter and 390px/320px checks. |
+| Local tests | 245 Python tests and both Node suites passed; 50 focused Live/smoke tests independently passed. |
+| Not established | Physical microphone capture/playback, production-scale reliability, verified recipient operations or delivery. |
+
+Workspace receipts: `research/LIVE-INTAKE-PUBLIC-d8f9c21.json`, `LIVE-INTAKE-CANDIDATE-d8f9c21.json`, `LIVE-CORE-CANDIDATE-d8f9c21.json`, `LIVE-PROMOTION-d8f9c21.json`, and `LIVE-INTAKE-CANDIDATE-c60faa7-{1,2}.json`.
+
+The previous public smoke failed when the model copied unchanged context hours into its update. The repair teaches sparse edits and returns static, field-specific feedback; it does not weaken the evidence/clock gates. Invalid edits remain atomic and never echo raw validation/provider arguments.
 
 ## Verified contracts and remaining probes
 
@@ -16,9 +35,9 @@ The coordinator verified model access under the existing Cloud Run runtime servi
 | Tools | Declare tools in session configuration, handle `message.tool_call.function_calls`, validate arguments, and return matching name/id with `send_tool_response`. Direct GenAI Live does not automatically execute MCP. Preserve the existing ADK/MCP broker behind the confirmed form rather than exposing its tools during intake. [Official tool guide](https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/live-api/configure-gemini-capabilities). |
 | Hosting | Cloud Run supports WebSockets, subject to the request timeout. An open connection uses active resources; reconnects may reach a different instance. A browser session must not rely on best-effort affinity for durable state. [Cloud Run WebSockets](https://docs.cloud.google.com/run/docs/triggering/websockets). |
 
-The current documentation includes transcription and response-modality examples that differ between model generations. First prove an audio-only connection, then probe input/output transcription and tool-call behavior with this exact model/version. Do not interpret a successful text-generation request to the existing Gemini model as proof of Live capability.
+Generated audio, typed tool calls and browser application have separate passing evidence above. A successful non-Live broker request alone does not establish Live capability; generated audio bytes do not establish physical microphone capture or audible playback.
 
-The model probe established access for that request and identity. Available capacity/quotas and the public browser WebSocket path remain separate checks. A generic published session limit is not the lab project's allowance.
+Model access, repeated typed edits and the reviewed browser path were demonstrated after the repair. Available capacity/quotas and microphone behavior remain separate checks. Published session limits are not the lab project's allowance.
 
 ## Reuse the supplied dinner demo
 
@@ -32,7 +51,7 @@ The implemented intake uses the existing GenAI SDK directly and follows the demo
 
 ## Smallest useful flow
 
-1. Coordinator clicks **Start voice intake** and permits the microphone. Capture only while visibly active; Stop ends capture, playback and both stream directions.
+1. Coordinator clicks **Start microphone** and permits the microphone. Capture only while visibly active; Stop ends capture, playback and both stream directions.
 2. Live asks for missing product/quantity units, preservation/storage, pickup location, and the actual pickup deadline. It can suggest a draft, but cannot certify safety, invent pallet conversions or overwrite known facts without showing the change.
 3. One local function, `draft_offer`, accepts only bounded optional draft fields. Server validation returns missing/ambiguous facts. It has no broker, message-sending, reservation, payment, approval or arbitrary URL capability. Coordinates can come from the visible initial form context, never model inference. Drafts carry a session ID and increasing version.
 4. Show transcript and editable field diffs. Unknown pallet quantity stays missing. An utterance such as “two hours from now” is anchored to the captured server timestamp and shown as an absolute zoned deadline for confirmation; conversation/reconnect time must consume that clock.
@@ -42,11 +61,11 @@ An audible “yes” or a model tool call is not permission to dispatch or conta
 
 ## Public-demo access and resource bounds
 
-The routes are `GET /api/live/config` and `WS /api/live/intake`. Dico authorized a public hackathon demo. Once the service-specific public binding is verified, browser callers need no Google credential. The backend continues to use its existing runtime service account and ADC when connecting to Vertex. No token is placed in browser code, WebSocket URLs or logs.
+The routes are `GET /api/live/config` and `WS /api/live/intake`. Dico authorized a public hackathon demo. The service-specific public binding is verified; browser callers need no Google credential. The backend continues to use its existing runtime service account and ADC when connecting to Vertex. No token is placed in browser code, WebSocket URLs or logs.
 
 The module accepts the actual browser origin or an exact HTTPS entry in `FOOD_LIVE_ALLOWED_ORIGINS` for the Cloud Shell preview. **Origin checks are not authentication:** non-browser callers can supply that header. The public service does not establish a user identity or enforce per-user quotas. Current bounds are two Live sessions per process, 180 seconds per session, 60 seconds without incoming input, 16 KiB per audio/JSON frame and 10 MB of incoming PCM per session. These are resource bounds, not a spending cap. Deployment instance limits remain separate.
 
-`FOOD_LIVE_ENABLED` defaults to false and remains the operator switch. The module rejects arbitrary endpoints and unknown tools, keeps drafts/transcripts in the current session, does not log raw audio/transcripts, and cancels both stream tasks before provider cleanup. Reconnecting requires visible review of the retained draft and exact deadline. The implementation is in `agent/live_intake.py`, with tests in `tests/test_live_intake.py`; existing SDK pins and form contracts are retained.
+`FOOD_LIVE_ENABLED` defaults to false and remains the operator switch. The module rejects arbitrary endpoints and unknown tools, keeps drafts/transcripts in the current session, does not log raw audio/transcripts, and cancels both stream tasks before provider cleanup. Terminal error and close sends each have a one-second best-effort bound, including rejected connections. Reconnecting requires visible review of the retained draft and exact deadline. The implementation is in `agent/live_intake.py`, with tests in `tests/test_live_intake.py`; existing SDK pins and form contracts are retained.
 
 After deployment, run the typed-only protocol smoke without a microphone:
 
@@ -54,7 +73,7 @@ After deployment, run the typed-only protocol smoke without a microphone:
 python scripts/verify_live_intake.py --base-url https://seattle-food-broker-6ukbp746xa-ue.a.run.app
 ```
 
-It opens the public WebSocket, supplies a synthetic one-pallet context with an absolute deadline, asks the model to change only the quantity to two pallets, and verifies the resulting versioned draft and completed response preserve that deadline. It prints status/counts only, sends Stop and never calls `/api/match`. Passing does not establish microphone/playback quality or recipient acceptance. A mismatched-origin rejection is a browser-origin test, not proof of authenticated access.
+The unchanged script passed both on the tagged candidate and on the public URL after promotion; retain it as a release gate for subsequent changes. It opens the public WebSocket, supplies a synthetic one-pallet context with an absolute deadline, asks the model to change only the quantity to two pallets, and verifies the resulting versioned draft and completed response preserve that deadline. It prints status/counts only, sends Stop and never calls `/api/match`. Passing does not establish microphone/playback quality or recipient acceptance. A mismatched-origin rejection is a browser-origin test, not proof of authenticated access.
 
 ## Minimal student-ADC probe
 
@@ -120,7 +139,7 @@ asyncio.run(main())
 PY
 ```
 
-Success proves only model connection and one generated audio turn under that identity. Next gates: prove the intended public WebSocket path and reject mismatched browser origins; verify microphone resampling, transcription, interruption and tool-call arguments; exercise missing quantity/deadline, contradictory corrections, reconnect and expired-offer behavior. Phone Safari/Chrome and microphone denial must retain the working typed flow. A region-policy or permission denial is a blocker to diagnose, not a reason to switch projects or bypass policy.
+The direct probe proves only model connection and one generated audio turn under that identity. The separate combined typed acceptance test now passes. Remaining checks: physical microphone/playback and mismatched-browser-origin rejection on the deployed path; verify microphone resampling, transcription, interruption and tool-call arguments; exercise missing quantity/deadline, contradictory corrections, reconnect and expired-offer behavior. Phone Safari/Chrome and microphone denial must retain the working typed flow. A region-policy or permission denial is a blocker to diagnose, not a reason to switch projects or bypass policy.
 
 ## Prior corpus consulted
 
