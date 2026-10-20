@@ -12,6 +12,8 @@ import re
 import threading
 import time
 
+from agent.source_state import with_source_states
+
 PROJECT_ID = os.getenv("GOOGLE_CLOUD_PROJECT", "qwiklabs-gcp-04-b992b9561e32")
 DATASET_ID = os.getenv("BIGQUERY_DATASET", "a4i_food")
 BOUNDS = {"south": 47.20, "north": 47.86, "west": -122.55, "east": -121.98}
@@ -153,11 +155,13 @@ class CityDataService:
             if self._cached is not None and time.monotonic() < self._expires:
                 result = deepcopy(self._cached)
                 result["cache"]["hit"] = True
-                return result
+                return with_source_states(result)
             result = self._load()
-            self._cached = deepcopy(result)
             # Failed requests may be retried soon without hammering cloud access.
             ttl = self.cache_ttl_seconds if result["status"] == "ready" else min(15, self.cache_ttl_seconds)
+            result["cache"]["effective_ttl_seconds"] = ttl
+            with_source_states(result)
+            self._cached = deepcopy(result)
             self._expires = time.monotonic() + ttl
             return result
 
