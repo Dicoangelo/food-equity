@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Seattle Food Equity & Surplus Broker: team demo and documentation for the Agents for Impact retail and grocer rescue challenge.">
+  <meta name="color-scheme" content="light">
+  <title>Seattle Food Equity · Team workspace</title>
+  <style>
+    :root { --page:#f1f4f7; --card:#fff; --ink:#182b3a; --secondary:#4f6475; --muted:#5b6f81; --line:#d7e0e7; --blue:#176b96; --blue-hover:#125879; --blue-soft:#e9f3f9; --green:#197764; --amber:#805416; }
+    * { box-sizing:border-box; }
+    html { scroll-behavior:smooth; }
+    body { margin:0; background:var(--page); color:var(--ink); font:16px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
+    a { color:var(--blue); text-underline-offset:4px; }
+    a:hover { color:var(--blue-hover); }
+    a:focus-visible { outline:3px solid var(--blue); outline-offset:4px; border-radius:4px; }
+    .skip { position:absolute; top:-100px; left:16px; z-index:1; background:var(--card); padding:12px; }
+    .skip:focus { top:12px; }
+    .shell { max-width:1160px; margin:auto; padding:0 28px; }
+    header { display:flex; justify-content:space-between; align-items:center; gap:24px; padding:26px 0; border-bottom:1px solid var(--line); }
+    .identity { font-size:17px; font-weight:700; letter-spacing:-.02em; text-decoration:none; color:var(--ink); }
+    .identity span { display:block; font-size:12px; font-weight:500; color:var(--muted); letter-spacing:.02em; }
+    nav { display:flex; gap:20px; flex-wrap:wrap; }
+    nav a { display:inline-flex; align-items:center; min-height:44px; font-size:14px; text-decoration:none; font-weight:600; }
+    main { padding:40px 0 24px; }
+    .hero { display:grid; grid-template-columns:1.25fr 1fr; gap:36px; align-items:center; }
+    .eyebrow { margin:0 0 16px; font-size:12px; font-weight:700; letter-spacing:.09em; text-transform:uppercase; color:var(--blue); }
+    h1 { max-width:700px; margin:0; font-size:clamp(32px,4vw,48px); line-height:1.15; letter-spacing:-.04em; font-weight:700; }
+    .lead { max-width:570px; margin:20px 0; color:var(--secondary); font-size:18px; }
+    .actions { display:flex; flex-wrap:wrap; align-items:center; gap:12px; margin-top:24px; }
+    .button { display:inline-flex; min-height:48px; align-items:center; justify-content:center; gap:18px; padding:10px 18px; border-radius:8px; border:1px solid var(--blue); text-decoration:none; font-size:15px; font-weight:650; }
+    .primary { background:var(--blue); color:#fff; }
+    .primary:hover { background:var(--blue-hover); color:#fff; }
+    .secondary { background:var(--card); }
+    .micro { font-size:13px; color:var(--muted); margin:12px 0 0; }
+    .card { background:var(--card); border:1px solid var(--line); border-radius:14px; padding:24px; }
+    .brief { border-top:4px solid var(--blue); }
+    .brief h2 { margin:4px 0 16px; font-size:22px; }
+    .tag { display:inline-block; color:var(--green); font-size:12px; font-weight:700; letter-spacing:.04em; text-transform:uppercase; }
+    .brief ul { padding:0; margin:0; list-style:none; }
+    .brief li { padding:11px 0; border-top:1px solid var(--line); font-size:14px; color:var(--secondary); }
+    .brief strong { display:block; color:var(--ink); font-weight:650; }
+    section { margin-top:44px; scroll-margin-top:20px; }
+    .section-title { margin:0 0 16px; font-size:22px; letter-spacing:-.025em; }
+    .steps { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:16px; }
+    .step { display:inline-flex; justify-content:center; align-items:center; width:32px; height:32px; border-radius:8px; background:var(--blue-soft); color:var(--blue); font-weight:700; font-size:13px; }
+    h3 { margin:14px 0 8px; font-size:17px; line-height:1.35; }
+    .card p { margin:0; font-size:14px; color:var(--secondary); }
+    .evidence { display:grid; grid-template-columns:1fr 1fr; gap:16px; }
+    .evidence h3 { margin-top:0; }
+    .evidence .note { color:var(--amber); }
+    .resources { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:12px; }
+    .resource { display:flex; flex-direction:column; justify-content:space-between; min-height:135px; border-radius:10px; padding:18px; background:var(--card); border:1px solid var(--line); text-decoration:none; }
+    .resource:hover { border-color:var(--blue); background:#fafdff; }
+    .resource strong { font-size:15px; }
+    .resource span { color:var(--secondary); font-size:13px; margin-top:12px; }
+    footer { display:flex; flex-wrap:wrap; justify-content:space-between; gap:12px; border-top:1px solid var(--line); margin-top:40px; padding:24px 0 32px; color:var(--muted); font-size:12px; }
+    footer p { margin:0; }
+    @media(max-width:850px) { .hero { grid-template-columns:1fr; gap:24px; } .resources { grid-template-columns:1fr 1fr; } .lead { max-width:670px; } }
+    @media(max-width:600px) {
+      .shell { padding:0 18px; } header { align-items:flex-start; flex-direction:column; gap:10px; padding:20px 0 12px; }
+      nav { gap:20px; } main { padding-top:28px; } .lead { font-size:16px; } .steps,.evidence { grid-template-columns:1fr; }
+      .card { padding:20px; } section { margin-top:32px; } .actions { align-items:stretch; } .button { flex:1 1 150px; }
+      .resources { gap:10px; } .resource { padding:14px; } .resource strong { font-size:14px; }
+    }
+    @media(prefers-reduced-motion:reduce) { html { scroll-behavior:auto; } }
+  </style>
+</head>
+<body>
+  <a class="skip" href="#main">Skip to the team workspace</a>
+  <div class="shell">
+    <header>
+      <a class="identity" href="./">Seattle Food Equity<span>Agents for Impact 2026 · Team workspace</span></a>
+      <nav aria-label="Team navigation">
+        <a href="#demo">Demo flow</a>
+        <a href="#evidence">Evidence</a>
+        <a href="#team">Team docs</a>
+      </nav>
+    </header>
+    <main id="main">
+      <div class="hero">
+        <div>
+          <p class="eyebrow">Challenge 02 / Retail &amp; grocer rescue</p>
+          <h1>Move surplus toward a viable handoff.</h1>
+          <p class="lead">A Seattle broker that finds relevant recipients, checks physical constraints and turns an urgent food offer into a proposed Match Brief.</p>
+          <div class="actions">
+            <a class="button primary" href="https://seattle-food-broker-6ukbp746xa-ue.a.run.app/">Open the live broker <span aria-hidden="true">↗</span></a>
+            <a class="button secondary" href="https://github.com/niatalwalkar/food-equity/blob/main/docs/PRE-READ.md">Read the team brief</a>
+          </div>
+          <p class="micro">Public demo hosted on Cloud Run. Review scenario assumptions before running a match.</p>
+        </div>
+        <aside class="card brief" aria-labelledby="brief-title">
+          <span class="tag">The proposed Match Brief</span>
+          <h2 id="brief-title">An answer a coordinator can act on.</h2>
+          <ul>
+            <li><strong>Recipient and alternatives</strong>Who fits, why they fit and up to two eligible backups.</li>
+            <li><strong>Capacity and the clock</strong>Storage, full-lot capacity, donor deadline and feasibility checks.</li>
+            <li><strong>Context and a draft handoff</strong>Neighborhood indicators and outreach ready for human review.</li>
+          </ul>
+        </aside>
+      </div>
+      <section id="demo" aria-labelledby="demo-title">
+        <h2 id="demo-title" class="section-title">Run the rescue workflow</h2>
+        <div class="steps">
+          <article class="card"><span class="step" aria-hidden="true">01</span><h3>Enter an offer</h3><p>Start with bakery surplus, urgent chilled food or a full-lot capacity stress case. Check quantity, storage, pickup origin and the donor’s actual deadline.</p></article>
+          <article class="card"><span class="step" aria-hidden="true">02</span><h3>Review the evidence</h3><p>Inspect the proposal, rejected candidates and unresolved facts. A no-match is a valid result. Use the map to explore approximate locations and neighborhood context.</p></article>
+          <article class="card"><span class="step" aria-hidden="true">03</span><h3>Confirm the handoff</h3><p>Review and copy the Match Brief or outreach draft. Confirm recipient acceptance, actual address, operational capacity and pickup timing before arranging delivery.</p></article>
+        </div>
+      </section>
+      <section id="evidence" aria-labelledby="evidence-title">
+        <h2 id="evidence-title" class="section-title">Know what the demo establishes</h2>
+        <div class="evidence">
+          <article class="card"><h3>Real retrieval. Explicit constraints.</h3><p>The core service uses an ADK/Gemini agent, MCP Toolbox and BigQuery vector search. Physical feasibility checks and a final deadline recheck produce the grounded brief. A successful run demonstrates the software path; it does not confirm a recipient’s live availability.</p></article>
+          <article class="card"><h3>Source limits stay visible.</h3><p>Operational recipient profiles are generated or planted demo data. Census indicators describe neighborhoods, not individual need; map locations are approximate. Directions open separately. FoodKeeper is consumer quality guidance and does not certify safety or extend a deadline.</p></article>
+        </div>
+        <p class="micro">The app sends no outreach, makes no reservation and dispatches no delivery. No measured food-rescue or equity improvement is claimed.</p>
+      </section>
+      <section id="team" aria-labelledby="team-title">
+        <h2 id="team-title" class="section-title">Keep the team aligned</h2>
+        <div class="resources">
+          <a class="resource" href="https://github.com/niatalwalkar/food-equity"><strong>Team repository ↗</strong><span>Source, pull requests and the current project README.</span></a>
+          <a class="resource" href="https://github.com/niatalwalkar/food-equity/blob/main/docs/IMPLEMENTATION-HANDOFF.md"><strong>Implementation handoff ↗</strong><span>Architecture, contracts, provenance and evidence limits.</span></a>
+          <a class="resource" href="https://github.com/niatalwalkar/food-equity/blob/main/HACKATHON-BOARD.md"><strong>Control board ↗</strong><span>Shared status, open decisions and the next action.</span></a>
+          <a class="resource" href="https://seattle-food-broker-6ukbp746xa-ue.a.run.app/docs"><strong>API reference ↗</strong><span>Request and response schemas served by the running broker.</span></a>
+        </div>
+      </section>
+    </main>
+    <footer>
+      <p>Seattle Food Equity &amp; Surplus Broker · Agents for Impact 2026</p>
+      <p>Static team portal on GitHub Pages. Application and data services run on Cloud Run.</p>
+    </footer>
+  </div>
+</body>
+</html>

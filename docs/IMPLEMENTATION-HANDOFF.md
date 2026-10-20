@@ -2,19 +2,24 @@
 
 **Snapshot: 20 October 2026.** Track: Seattle retail and grocer rescue. The deliverable is a **proposed Match Brief**, with recipient reasons, capacity/storage checks, a fixed clock, neighborhood context, outreach drafts and up to two actual eligible alternatives. It does not reserve inventory, contact recipients or dispatch transport.
 
+**[Open the live broker](https://seattle-food-broker-6ukbp746xa-ue.a.run.app)** · [Access/proxy instructions](../README.md#team-access)
+
 ## Release and evidence status
 
 | Layer | Verified status at this handoff |
 |---|---|
-| Team repository | `main` is `9d7a931`; PRs #2, #4 and #6 are merged. This document and the current flow/acceptance/deadline changes are working-tree changes awaiting release. |
-| Live application | Authenticated Cloud Run service `seattle-food-broker`, `us-east1`; revision ending `00003`, source `e1fbe03`. FoodKeeper, city data and real ADK/MCP execution were verified on that deployment. It is not proof that newer working-tree changes are live. |
-| Local verification | Release coordinator reports **172 Python tests and the Node UI contract suite passing**. Local browser checks at 320px and 390px found no horizontal overflow and verified 44px controls. These are local checks, not a completed post-deployment UI acceptance pass. |
-| Live replay audit | Job execution `seattle-food-audit-e1fbe03-dh844` completed in 38.12s: ten actual MCP retrievals, zero retrieval/evaluation errors, 389 supplied baseline tracts. Two proposed matches: 1/4 retail and 1/6 cross-track; eight `no_match` results against the stored inputs. Posting 8 has the source-clock defect described below. |
-| Still pending | Deploy the combined changes; verify the released UI, positive/negative paths and `/api/health`; rerun the audit against the release image. The earlier audit predates the new acceptance guards. |
+| Team repository | `main` is `0c952f3`; PRs #7 and #8 are merged, following #2/#4/#6. New Live intake and documentation updates remain unreleased working-tree changes. |
+| Live application | Cloud Run `seattle-food-broker`, `us-east1`, source `9027ea5`, revision `seattle-food-broker-00004-sxn`. Authenticated smoke passed health, city, FoodKeeper, real ADK/MCP bakery success and cold-capacity refusal. Bakery returned one proposal and one backup, with the exact deadline retained. |
+| Public demo access | Dico explicitly authorized public invocation of this single service. The service-only IAM binding succeeded; unauthenticated HTTP checks returned 200 for `/`, `/api/health` and `/api/city`. Existing runtime service identity and private-loopback Toolbox are unchanged. |
+| Data verification | `/api/city` returned 389 tract points and 119 profiles: 110 `generated`, nine `planted`. The 661-product FoodKeeper reference returned options without changing the deadline. |
+| Local verification | Core Python/Node contracts and local phone layouts previously passed. The new Live backend independently passes 24 tests covering clock anchoring, bounded transport, origin checks and cleanup. Mock tests do not establish deployed microphone/WebSocket behavior. |
+| Live model probe | Gemini `gemini-3.8-live` in `us-central1` connected under the runtime identity and returned 33,122 audio bytes. Optional browser intake defaults off; integration is pending release. |
+| Historical replay audit | `seattle-food-audit-e1fbe03-dh844`: ten actual MCP retrievals, zero retrieval/evaluation errors, 389 supplied baseline tracts; two proposals (1/4 retail, 1/6 cross-track), eight no-matches. This predates current acceptance guards and includes posting 8's source-clock defect. |
+| Still pending | Deploy and verify Live intake end to end; capture the replay audit receipt for the current release. |
 
-Workspace evidence is under `outputs/google-impact-toolkit-2026-10-20/research/`: `AUDIT-E1FBE03.json`, `LIVE-CLOUD-RUN-MAP-VERIFIED.jpg` and `UI-PHONE-390.png`. The audit uses evaluation time `2026-10-20T16:30:00+00:00`; it is a historical replay. These workspace receipts are not embedded in this document.
+Workspace evidence is under `outputs/google-impact-toolkit-2026-10-20/research/`: `LIVE-RELEASE-9027ea5.json`, `LIVE38-PROBE-9027.json`, `LIVE-TEAM-UI-9027ea5.png` and historical `AUDIT-E1FBE03.json`. The audit uses evaluation time `2026-10-20T16:30:00+00:00`; it is a historical replay. These workspace receipts are not embedded in this document.
 
-The audit's proposed-recipient neighborhood means were **below** the full equal-tract baseline: poverty −2.05 percentage points, no-vehicle households −3.62 points and assistance −3.11 points. Do not claim measured equity uplift, rescued food, actual deliveries or causal impact from this result.
+The historical audit's proposed-recipient neighborhood means were **below** the full equal-tract baseline: poverty −2.05 percentage points, no-vehicle households −3.62 points and assistance −3.11 points. Do not claim measured equity uplift, rescued food, actual deliveries or causal impact from this result.
 
 **Known source-clock defect — sealed formula, posting 8.** The receipt preserves `hours_available=168`, `foodkeeper_product="Formula"`, `storage_state="pantry"` and `shelf_life_hours=1`; the replay correctly uses the stored `hours_remaining=1`. The manifest's `expected_hours_available=168` checks donor availability, not the effective replay clock. There is no API clamp in this path. However, the one-hour cap comes from the prepared-formula after-opening reference and is not applicable to the posting's “48 cases of sealed infant formula, 8 months to expiry.” The current [starter notebook](../notebooks/c2_01_load_explore.ipynb), sections 10 and 13, already documents this exact defect, maps the sealed example to “Liquid concentrate or ready-to-feed formula,” and includes a “sealed goods keep their clock” sanity check. The historical table values therefore differ from that corrected notebook. This is a data-state mismatch, not a verified conservative expiry.
 
@@ -42,6 +47,7 @@ Coordinator browser
 | [agent/tools.yaml](../agent/tools.yaml) | One parameterized read-only MCP tool: `gemini-embedding-2`, COSINE, brute-force search, top 12; embeddings excluded from returned rows. |
 | [agent/city.py](../agent/city.py) | Bounded BigQuery map reads, 300-second ready cache, 15-second failed/partial cache, no model calls. |
 | [agent/foodkeeper.py](../agent/foodkeeper.py) | Literal all-query-term search over the pinned 661-product reference; no inferred remaining freshness. |
+| [agent/live_intake.py](../agent/live_intake.py) | Pending optional Gemini 3.8 Live draft adapter: bounded session, explicit quantity/window evidence, fixed-clock preservation, review before applying to the form. It cannot match, send or reserve. |
 | [scripts/serve.py](../scripts/serve.py), [Dockerfile](../Dockerfile) | Official Toolbox 1.14.0 on loopback port 5000; FastAPI on `PORT`/8080, supervised together. Only HTTP is exposed. |
 | [scripts/audit_postings.py](../scripts/audit_postings.py), [scripts/run_audit_job.py](../scripts/run_audit_job.py) | Ten-posting replay through MCP and the matcher without Gemini; full-tract baseline, explicit manifest and bounded job wrapper. |
 
@@ -58,8 +64,8 @@ Vertex defaults to `gemini-2.5-flash` in `us-east1`. BigQuery dataset `a4i_food`
 | `POST /api/match` | Real ADK/MCP flow. A no-match or fallback is an explicit result, not an invented success. |
 | `GET /api/city` | `ready`, `partial` or `unavailable`; sanitized `tracts`, `recipients`, `provenance`, `limits`, `warnings`, `errors`, `as_of`, `cache`. |
 | `GET /api/foodkeeper?query=…` | Query 2–120 characters; at most five literal-match options, exact subtype/storage basis, raw fields, source hash and unresolved applicability. No automatic product selection. |
-| `GET /healthz`, `GET /api/health` | Same process-only response: `{"status":"ok","cloud_dependencies":"not_checked"}`. Keep `/healthz` for probes; the new `/api/health` alias avoids the Google edge interception observed on external `/healthz`. Alias release verification is pending. |
-| `GET /docs`, `GET /openapi.json` | FastAPI schema/documentation behind the same authenticated service boundary. |
+| `GET /healthz`, `GET /api/health` | Same process-only response: `{"status":"ok","cloud_dependencies":"not_checked"}`. Keep `/healthz` for probes; the new `/api/health` alias avoids the Google edge interception observed on external `/healthz`. `/api/health` passed the `9027ea5` release check. |
+| `GET /docs`, `GET /openapi.json` | FastAPI schema/documentation with the same service access policy; public-demo access is enabled. |
 
 Match input: `posting_text` 5–4000 characters; `donor_name` 1–200; finite `pallet_count` >0 to 10,000; `hours_remaining` >0 to 168; geographic `donor_lat`/`donor_lon`; `required_storage` = `cold`, `ambient` or `frozen`; optional timezone-aware `deadline_at`. Refrigeration/dry aliases normalize, unknown fields are forbidden, and expired deadlines fail validation.
 
@@ -84,7 +90,7 @@ Eligible ranking uses 40% semantic similarity, 35% neighborhood proxy and 25% lo
 
 | Data | Meaning and limits |
 |---|---|
-| `a4i_food.recipient_embeddings` | Canonical runtime table; live inventory: 119 profiles and 3,072-dimensional embeddings. Identity/address/NTEE originate in the IRS starter data; operating capacity, storage, hours and narrative are generated. `planted` rows include invented organizations. |
+| `a4i_food.recipient_embeddings` | Canonical runtime table; live inventory: 119 profiles (110 generated, nine planted) and 3,072-dimensional embeddings. Identity/address/NTEE originate in the IRS starter data; operating capacity, storage, hours and narrative are generated. `planted` rows include invented organizations. |
 | `a4i_food.tract_demographics` | ACS-derived aggregate neighborhood indicators. Map returns 389 tract-centroid points, within the Seattle metro display bounds; dates are not supplied by the current table. No individual hunger/eligibility inference. |
 | `a4i_food.surplus_postings` | Ten starter offers for audit replay; pallet quantities are explicitly hypothetical manifest assumptions, not conversions of crates, loaves, gallons or tons. Audit can retain the starter's 720-hour essentials window; web offers remain capped at 168 hours. |
 | `data/foodkeeper.json` | Pinned USDA consumer freshness/quality reference, described in [data/README.md](../data/README.md). Original purchase/opening/thawing fields and nulls are retained. No deadline mutation or commercial cold-chain clearance. |
@@ -94,7 +100,7 @@ The UI bakery preset uses original posting 3: “roughly 200 loaves of day-old b
 
 ## Teammate SQL and safe integration
 
-The teammate `bq/` files were merged; their current working-tree cleanup removes shell wrappers and separates two purposes:
+The teammate `bq/` files and wrapper cleanup are merged. They separate two purposes:
 
 - [01_embed_profiles.sql](../bq/01_embed_profiles.sql) is an isolated **legacy sandbox proposal**, using `text-embedding-004`/768 dimensions and only `*_legacy_004_proposal` objects. `CREATE` fails on existing objects instead of replacing them. Connection/model permissions are unverified. It is not deployment setup and must never replace or mix vectors with the current 3,072-dimensional runtime corpus.
 - [02_equity_audit.sql](../bq/02_equity_audit.sql) is a read-only selected-profile/tract diagnostic against the canonical corpus and current tract table. Profile 91 is an example, not a claimed winner. It shows valid observation counts and an equal-tract baseline; it is not the ten-posting replay.
@@ -113,8 +119,18 @@ node tests/test_ui_contract.js
 
 The Python suite includes real ADK execution with a scripted model and mocked MCP boundary; this is offline correctness evidence, not a cloud call. Node tests exercise safe DOM output, fixed clock, presets, single-flight locking, pending facts, copies, map and FoodKeeper. API tests also parse the actually rendered JavaScript and assert health/UI requests do not invoke the broker.
 
-In the already verified lab environment, [deploy_cloud_run.sh](../scripts/deploy_cloud_run.sh) checks the active project/account class and deploys an authenticated service. It changes no IAM or billing settings and does not replace data. Current configuration includes a service-level warm minimum of one and maximum four instances; this consumes runtime resources while idle. Keep credentials out of files/output and preserve the existing authentication boundary.
+In the already verified lab environment, [deploy_cloud_run.sh](../scripts/deploy_cloud_run.sh) checks the active project/account class and updates the existing service without changing its invoker policy. It changes no IAM or billing settings and does not replace data. Current configuration includes a service-level warm minimum of one and maximum four instances; this consumes runtime resources while idle. Keep credentials out of files/output. Public invocation was separately authorized by Dico for this demo; deployment does not itself modify IAM.
 
-After release, use `python scripts/smoke_live.py` for real execution evidence, then test a declared ambient offer with `--require-match` only if the current constraints allow it. Inspect actual `mcp_result`, `adk_function_result`, clock recheck and generation mode. Check the released UI at desktop and phone widths, including map failure/partial data, no-match, pending facts, copy actions and FoodKeeper. Run the reviewed audit manifest against the release image from a declared evaluation timestamp; preserve the report and distinguish replay from current-time matching.
+After each release, run the standalone verifier from student Cloud Shell:
 
-**Next action:** release and verify the combined broker/UI changes, then rerun the audit. [A2A-RESCUE-EXCHANGE-PRD.md](A2A-RESCUE-EXCHANGE-PRD.md) is a design-only proposal for future simulated partner protocols; no A2A endpoint, partner negotiation, durable exchange ledger, payments or delivered-impact accounting is implemented.
+```bash
+python scripts/verify_live_release.py \
+  --expected-revision ACTUAL_READY_REVISION \
+  --output /tmp/release-evidence.json
+```
+
+Use a new output filename. It validates the target, holds the identity token in process memory and records sanitized health/city/FoodKeeper plus real ADK/MCP bakery/refusal evidence. A successful no-match is distinct from a runtime failure. The `9027ea5` receipt has both a bakery success and a cold-capacity refusal; health alone does not verify cloud dependencies. Check direct access and the released UI at desktop/phone widths separately. Replay audits must use a declared evaluation timestamp and exact release image, with source assumptions preserved.
+
+The pending Live routes are `GET /api/live/config` and WebSocket `/api/live/intake`. They use ADC server-side, session/message bounds and exact origin checks; origin checks are not user authentication. Keep `FOOD_LIVE_ENABLED` off until the intended demo access and end-to-end draft review are verified. Confirm Start/Stop, microphone denial, typed fallback, fixed deadlines, disconnect cleanup and expiry. Applying a reviewed draft must not trigger matching or send outreach.
+
+**Next action:** release and validate optional Live intake on the verified public demo. [A2A-RESCUE-EXCHANGE-PRD.md](A2A-RESCUE-EXCHANGE-PRD.md) remains design only; no A2A endpoint, partner negotiation, durable exchange ledger, payments or delivered-impact accounting is implemented.
