@@ -399,6 +399,16 @@ def workspace_style():
     return FileResponse(Path(__file__).parent / "ui/workspace.css", media_type="text/css")
 
 
+@app.get("/ui/food-rescue-network.png", include_in_schema=False)
+def network_illustration():
+    return FileResponse(Path(__file__).parent / "ui/food-rescue-network.png", media_type="image/png")
+
+
+@app.get("/ui/review-crate-spot.png", include_in_schema=False)
+def review_illustration():
+    return FileResponse(Path(__file__).parent / "ui/review-crate-spot.png", media_type="image/png")
+
+
 @app.get("/ui/workspace.js", include_in_schema=False)
 def workspace_script():
     return FileResponse(Path(__file__).parent / "ui/workspace.js", media_type="text/javascript")

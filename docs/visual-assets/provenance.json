@@ -1,0 +1,39 @@
+{
+  "tool": "built-in image_gen.imagegen",
+  "generation_calls": 2,
+  "app_files_modified": false,
+  "assets": [
+    {
+      "file": "food-rescue-network.png",
+      "original_path": "/Users/dicoangelo/.codex/generated_images/01a15adb-654e-7c11-a131-7f5b69734d9e/exec-08f7cb28-e7f1-4e43-820f-09aaa7dd445c.png",
+      "width": 1672,
+      "height": 941,
+      "format": "PNG",
+      "mode": "RGB",
+      "bytes": 2023202,
+      "sha256": "f0e414afe089fc7b21779c88900aa11f1c6d50ebe716d34006e4ef178fecf422"
+    },
+    {
+      "file": "review-crate-spot.png",
+      "original_path": "/Users/dicoangelo/.codex/generated_images/01a15adb-654e-7c11-a131-7f5b69734d9e/exec-67048465-2a10-4c9c-8db1-640f40485e48.png",
+      "width": 1254,
+      "height": 1254,
+      "format": "PNG",
+      "mode": "RGBA",
+      "bytes": 1569693,
+      "sha256": "1c3b2c2beb54d18c3a0971d279eae9a4a4b9ae54a88e6d02c5a0362833596f6a",
+      "alpha_range": [
+        0,
+        255
+      ],
+      "fully_transparent_pixels": 813833,
+      "fully_opaque_pixels": 433,
+      "corner_alpha": [
+        0,
+        0,
+        0,
+        0
+      ]
+    }
+  ]
+}

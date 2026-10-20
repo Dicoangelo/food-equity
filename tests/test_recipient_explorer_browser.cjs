@@ -11,8 +11,8 @@ const html = source.split('html_content = r"""')[1].split('"""')[0];
 function fixtureHtml() {
   if (!serveOnly) return html;
   const current = fs.readFileSync(path.join(root, 'agent/api.py'), 'utf8').split('html_content = r"""')[1].split('"""')[0];
-  const banner = '<div id="local-review-banner" role="status" style="position:fixed;bottom:12px;left:50%;transform:translateX(-50%);z-index:20000;max-width:calc(100vw - 24px);box-sizing:border-box;padding:9px 16px;border:1px solid #fbbf24;border-radius:8px;background:#422006;color:#fef3c7;font:600 13px/1.4 system-ui;text-align:center;pointer-events:none">Local review · sample data · no live checks</div>';
-  return current.replace('</body>', banner + '</body>');
+  const banner = '<div id="local-review-banner" role="status" style="position:relative;margin:8px auto;z-index:1;max-width:calc(100vw - 24px);box-sizing:border-box;padding:9px 16px;border:1px solid #fbbf24;border-radius:8px;background:#422006;color:#fef3c7;font:600 13px/1.4 system-ui;text-align:center;pointer-events:none">Local review · sample data · no live checks</div>';
+  return current.replace(/(<body[^>]*>)/, '$1' + banner);
 }
 const scenarios = JSON.parse(source.match(/SAMPLE_SCENARIOS = (\[[\s\S]*?\n\])/)[1]);
 const cityRows = [
@@ -40,8 +40,8 @@ const server = http.createServer((req,res) => {
   if(req.url === '/') {res.setHeader('content-type','text/html');return res.end(fixtureHtml());}
   if(req.url.startsWith('/ui/')) {
     const name=req.url.slice('/ui/'.length);
-    if(!['companion.js','companion.css','alert-intake.js','recipient-explorer.js','recipient-explorer.css','offer-workflow.js','source-state.js','view-context.js','workspace.css','workspace.js'].includes(name)) {res.writeHead(404);return res.end();}
-    res.setHeader('content-type',name.endsWith('.js')?'text/javascript':'text/css');
+    if(!['food-rescue-network.png','review-crate-spot.png','companion.js','companion.css','alert-intake.js','recipient-explorer.js','recipient-explorer.css','offer-workflow.js','source-state.js','view-context.js','workspace.css','workspace.js'].includes(name)) {res.writeHead(404);return res.end();}
+    res.setHeader('content-type',name.endsWith('.png')?'image/png':name.endsWith('.js')?'text/javascript':'text/css');
     return res.end(fs.readFileSync(path.join(root,'agent/ui',name)));
   }
   if(req.url === '/api/scenarios') return json(scenarios);

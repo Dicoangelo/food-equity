@@ -677,6 +677,7 @@ body:is(.workspace-assistant-open,.assistant-open) { overflow: hidden; }
 .result-state[data-state="idle"].has-review-art { padding-right: 102px; min-height: 100px; }
 .result-state[data-state="idle"] .workspace-review-art { display: block; position: absolute; right: 16px; top: 50%; transform: translateY(-50%); width: 70px; height: 70px; object-fit: contain; }
 #pickup-window-summary { min-height: var(--control-height); display: flex; align-items: center; color: var(--ink); font-weight: 600; line-height: 1.4; overflow-wrap: anywhere; }
+#pickup-window-summary.hidden { display: none; }
 #rescue-app #edit-pickup-window { min-height: 32px; padding: 3px 0; border: 0; background: transparent; color: var(--accent); font-size: 12px; text-align: left; text-decoration: underline; text-underline-offset: 3px; }
 #workspace-clock { font-size: 17px; line-height: 1.5; }
 #map .leaflet-bar { border: 1px solid var(--line); border-radius: 9px; box-shadow: 0 3px 12px rgb(27 57 43 / 14%); overflow: hidden; }
