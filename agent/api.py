@@ -1306,7 +1306,8 @@ def index_dashboard():
             if (typeof ViewContext !== 'undefined') socket.send(JSON.stringify({type:'view_context',context:ViewContext.snapshot()}));
             socket.send(JSON.stringify({type:'context',fields:voiceFormContext()}));
             voice.ready = true;
-            voice.starting = false;
+            // Keep the single-flight guard through permission and worklet setup.
+            voice.starting = useMicrophone;
             clearTimeout(voice.timer);
             voice.timer = setTimeout(()=>stopVoiceSession('The session time limit was reached. Review the draft or start another session.'),voiceSessionSeconds()*1000);
             voice.resolveReady?.(true); voice.resolveReady = null;
@@ -1380,6 +1381,8 @@ def index_dashboard():
           catch (_) {
             if (generation === voice.generation) stopVoiceSession('Microphone unavailable or permission denied. Send a typed note to start a text-only session, or use the form.');
             return false;
+          } finally {
+            if (generation === voice.generation) { voice.starting = false; refreshVoiceControls(); }
           }
         }
         return generation === voice.generation;

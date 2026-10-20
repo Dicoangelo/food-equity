@@ -502,6 +502,12 @@ async function testVoiceIntake() {
   sockets.at(-1).receive({type:'ready',provider_epoch:1,audio_activity:true,input_correlation:true});
   await tick();
   assert.equal(typeof resolvePermission,'function');
+  const permissionRequests=micRequests;
+  const repeatedStart=context.startVoiceSession(true);
+  await tick();
+  assert.equal(micRequests,permissionRequests,'A second click while microphone permission is pending cannot open a second capture');
+  assert.equal(await repeatedStart,false);
+  assert.equal(nodes.get('voice-start').disabled,true,'Start stays disabled throughout permission and audio setup');
   context.stopVoiceSession();
   const lateStream=createStream();
   resolvePermission(lateStream);
