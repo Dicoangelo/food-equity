@@ -25,6 +25,7 @@ MAX_JSON_BYTES = 16_384
 MAX_AUDIO_FRAME = 16_384
 MAX_AUDIO_BYTES = 10_000_000
 MAX_TEXT_CHARS = 4000
+TERMINAL_IO_TIMEOUT_SECONDS = 1.0
 REQUIRED = ("posting_text", "donor_name", "required_storage", "pallet_count",
             "donor_lat", "donor_lon", "deadline_at")
 
@@ -308,6 +309,15 @@ class ProtocolError(Exception):
     pass
 
 
+async def best_effort_terminal_io(operation):
+    """A non-reading peer must not retain a session slot during final notification."""
+    try:
+        await asyncio.wait_for(operation, timeout=TERMINAL_IO_TIMEOUT_SECONDS)
+    except Exception:
+        # Cleanup has priority over delivering the final status/close frame.
+        pass
+
+
 async def serve(websocket, config, client_factory=create_client):
     from google.genai import types
     draft = Draft()
@@ -442,16 +452,22 @@ async def serve(websocket, config, client_factory=create_client):
                         task.cancel()
                     await asyncio.gather(*tasks, return_exceptions=True)
     except TimeoutError:
-        await emit({"type": "error", "code": "session_timeout",
-                    "message": "Voice intake timed out. Review retained fields or continue with the form."})
+        await best_effort_terminal_io(emit({
+            "type": "error", "code": "session_timeout",
+            "message": "Voice intake timed out. Review retained fields or continue with the form.",
+        }))
     except ProtocolError as exc:
-        await emit({"type": "error", "code": str(exc),
-                    "message": "Voice intake stopped because an unsupported or oversized message was received."})
+        await best_effort_terminal_io(emit({
+            "type": "error", "code": str(exc),
+            "message": "Voice intake stopped because an unsupported or oversized message was received.",
+        }))
     except WebSocketDisconnect:
         pass
     except Exception:
-        await emit({"type": "error", "code": "live_unavailable",
-                    "message": "Live voice is unavailable. Continue using the form; no match or action was started."})
+        await best_effort_terminal_io(emit({
+            "type": "error", "code": "live_unavailable",
+            "message": "Live voice is unavailable. Continue using the form; no match or action was started.",
+        }))
     finally:
         for task in tasks:
             task.cancel()
@@ -462,10 +478,7 @@ async def serve(websocket, config, client_factory=create_client):
                 await asyncio.wait_for(client.aio.aclose(), 3)
             except Exception:
                 pass
-        try:
-            await websocket.close()
-        except (RuntimeError, WebSocketDisconnect):
-            pass
+        await best_effort_terminal_io(websocket.close())
 
 
 @router.get("/api/live/config")
@@ -482,13 +495,13 @@ def live_config():
 async def live_intake(websocket: WebSocket):
     config = settings()
     if not config.enabled or not same_origin(websocket):
-        await websocket.close(code=1008)
+        await best_effort_terminal_io(websocket.close(code=1008))
         return
     if not config.project or config.location not in {"us-central1", "us", "eu"}:
-        await websocket.close(code=1013)
+        await best_effort_terminal_io(websocket.close(code=1013))
         return
     if not slots.acquire(config.max_sessions):
-        await websocket.close(code=1013)
+        await best_effort_terminal_io(websocket.close(code=1013))
         return
     try:
         await websocket.accept()

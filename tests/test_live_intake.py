@@ -295,3 +295,66 @@ async def test_timeout_and_provider_error_are_safe_and_clean():
     result = await next_output(ws)
     assert result["code"] == "live_unavailable" and "SECRET" not in str(result)
     assert client.closed and ws.closed
+
+
+class BackpressuredWebSocket(FakeWebSocket):
+    """ASGI sends wait on a client that never reads; cancellation still works."""
+    def __init__(self):
+        super().__init__()
+        self.error_started = asyncio.Event()
+        self.close_started = asyncio.Event()
+        self.error_cancelled = False
+        self.close_cancelled = False
+
+    async def accept(self):
+        pass
+
+    async def send_json(self, value):
+        if value["type"] != "error":
+            return await super().send_json(value)
+        self.error_started.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            self.error_cancelled = True
+
+    async def close(self, **kwargs):
+        self.close_started.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            self.close_cancelled = True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["timeout", "protocol", "provider"])
+async def test_stalled_terminal_error_and_close_release_route_slot(monkeypatch, failure):
+    ws, client = BackpressuredWebSocket(), FakeClient(fail=failure == "provider")
+    capacity = live.SessionSlots()
+    monkeypatch.setattr(live, "slots", capacity)
+    monkeypatch.setattr(live, "same_origin", lambda _: True)
+    monkeypatch.setattr(live, "create_client", lambda _: client)
+    monkeypatch.setattr(live, "TERMINAL_IO_TIMEOUT_SECONDS", .01)
+    monkeypatch.setattr(live, "settings", lambda: live.Settings(
+        enabled=True, project="test", max_seconds=.03))
+    if failure == "protocol":
+        await ws.incoming.put({"type": "websocket.receive", "text": '{"type":"dispatch"}'})
+    task = asyncio.create_task(live.live_intake(ws))
+    await asyncio.wait_for(ws.error_started.wait(), 1)
+    assert capacity.active == 1
+    await asyncio.wait_for(task, 1)
+    assert ws.error_cancelled and ws.close_cancelled
+    assert client.closed and not client.session.receiving
+    assert capacity.active == 0
+    if failure != "provider":
+        assert client.context_closed
+
+
+@pytest.mark.asyncio
+async def test_rejected_connection_close_is_also_bounded(monkeypatch):
+    ws = BackpressuredWebSocket()
+    monkeypatch.setattr(live, "settings", lambda: live.Settings(enabled=False))
+    monkeypatch.setattr(live, "TERMINAL_IO_TIMEOUT_SECONDS", .01)
+    monkeypatch.setattr(live, "create_client", lambda _: pytest.fail("No client for disabled route"))
+    await asyncio.wait_for(live.live_intake(ws), 1)
+    assert ws.close_cancelled and not ws.error_started.is_set()
