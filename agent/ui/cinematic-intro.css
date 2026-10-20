@@ -1,24 +1,10 @@
-body.food-intro-open { overflow: hidden; }
-.food-cinematic-intro { position:fixed; inset:0; z-index:22000; display:grid; place-items:center; padding:24px; overflow-y:auto; overscroll-behavior:contain; background:#102c25f5; color:#eef7f1; }
-.food-intro-card { width:min(960px,100%); max-height:100%; }
-.food-intro-header { display:flex; justify-content:space-between; align-items:center; gap:20px; margin-bottom:20px; }
-.food-intro-eyebrow { margin:0 0 5px; color:#b8d5c4; font-size:11px; letter-spacing:.13em; text-transform:uppercase; }
-#rescue-app #food-intro-title { color:#f6fbf7; margin:0; font-size:28px; font-weight:650; letter-spacing:-.035em; }
-.food-intro-video { display:block; width:100%; max-height:calc(100dvh - 220px); aspect-ratio:16/9; object-fit:contain; border:1px solid #537066; border-radius:16px; background:#091b16; }
-.food-intro-footer { display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:14px; margin-top:18px; }
-.food-intro-controls { display:flex; gap:8px; flex-wrap:wrap; }
-#rescue-app .food-cinematic-intro button { min-height:44px; padding:10px 15px; border:1px solid #89a699; border-radius:9px; background:#213f34; color:#f5fbf7; font-size:13px; font-weight:600; }
-#rescue-app .food-cinematic-intro .food-intro-enter { background:#d8edbe; border-color:#d8edbe; color:#153b2c; padding-inline:24px; }
-#rescue-app .food-cinematic-intro button:focus-visible { outline:3px solid #d8edbe; outline-offset:4px; }
-#rescue-app .food-cinematic-intro button:disabled { opacity:.6; cursor:default; }
-.food-intro-status { color:#bfd5c8; margin:13px 0 0; font-size:12px; line-height:1.6; }
-@media(max-width:600px) {
-  .food-cinematic-intro { padding:20px 14px max(24px,env(safe-area-inset-bottom)); }
-  .food-intro-header { gap:12px; margin-bottom:16px; }
-  #rescue-app #food-intro-title { font-size:25px; }
-  .food-intro-video { border-radius:11px; max-height:calc(100dvh - 285px); }
-  .food-intro-footer { align-items:stretch; gap:12px; }
-  .food-intro-controls, #rescue-app .food-intro-enter { width:100%; }
-  .food-intro-controls button { flex:1; }
-}
-@media(prefers-reduced-motion:reduce) { .food-cinematic-intro * { animation:none!important; transition:none!important; } }
+/* Inline sidebar media; never covers or delays the workspace. */
+.food-story { min-width:0; margin:12px 0 4px; border:1px solid var(--line,#dce6df); border-radius:10px; background:var(--surface-soft,#f5f8f5); overflow:hidden; }
+#rescue-app .food-story-toggle, #rescue-app .food-story-close { display:block; width:100%; min-height:44px; padding:11px 12px; border:0; border-radius:8px; background:transparent; color:var(--accent,#176450); font-size:13px; line-height:1.5; font-weight:600; text-align:left; white-space:normal; }
+#rescue-app .food-story-toggle:hover, #rescue-app .food-story-close:hover { background:#e7f2e9; }
+#rescue-app .food-story button:focus-visible { outline:3px solid #176450; outline-offset:-3px; }
+.food-story-panel { padding:0 10px 10px; }
+.food-story-panel[hidden] { display:none!important; }
+.food-story-video { display:block; width:100%; min-width:0; aspect-ratio:16/9; object-fit:contain; border-radius:7px; background:#102c25; }
+.food-story-caption { margin:9px 2px 4px; color:var(--secondary,#4c655d); font-size:12px; line-height:1.55; }
+@media(prefers-reduced-motion:reduce) { .food-story * { animation:none!important; transition:none!important; } }
