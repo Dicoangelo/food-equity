@@ -1,18 +1,18 @@
-# Hackathon control board — 20 October 2026, 12:51 EDT
+# Hackathon control board — 20 October 2026, 13:28 EDT
 
 **Seattle · retail/grocer rescue · five people.** Project `qwiklabs-gcp-04-b992b9561e32`; `us-east1` / `us-east1-b`; BigQuery `a4i_food` in `US`.
 
 | Item | Verified state |
 |---|---|
-| Access | Cloud Shell student account/defaults verified; student Owner. VM Antigravity student identity previously checked; VM gcloud reported by Antigravity. GitHub Dicoangelo read-only on Nia; fork PRs, Nia merges. |
-| APIs/data | Vertex, Run, Build, Artifact Registry, BigQuery/connection enabled. 119 embeddings × 3072; 389 tracts. Generated recipient operations, not confirmed partners. |
-| Deploy | Authenticated [Cloud Run](https://seattle-food-broker-6ukbp746xa-ue.a.run.app), source `e1fbe03`, revision `00003-6vj`; use Cloud Shell proxy. ADK → MCP → BigQuery → Gemini verified. FoodKeeper advisory verified. |
-| Audit | Exact-image job completed: 10/10 retrievals, 2 proposals, 8 honest no-matches, zero runtime errors. Retail 1/4. No measured equity uplift; no actual deliveries. |
-| Repo/quality | Nia main `9d7a931`; PRs #2/#4/#6 merged. Current local fixes: refusal constraints, exact deadline, source bakery preset, mobile workflow. **172 Python + Node UI checks pass**; these fixes await release. |
-| Parallel work | VM parser/state patch reported 23 tests; integration unverified. UI light-template refinement next. A2A/incentives PRD is design only. |
+| Access | Student Cloud Shell and Owner verified. Public invocation granted to this Cloud Run service only; unauthenticated page/health/city HTTP 200. Dicoangelo uses fork PRs; Nia merges. |
+| APIs/data | Vertex, Run, Build, Artifact Registry, BigQuery/connection enabled. 119 profiles × 3072 embeddings; 389 tracts. 110 generated + 9 planted operational profiles, not confirmed partners. |
+| Deploy | [Public live broker](https://seattle-food-broker-6ukbp746xa-ue.a.run.app), source `9027ea5`, revision `00004-sxn`. Light responsive UI; real ADK → MCP → BigQuery → Gemini bakery match + cold-capacity refusal passed. |
+| Evidence | Bakery: one winner + one backup; exact donor deadline preserved. Earlier fixed replay: 2/10 proposals, 8 no-matches, no equity uplift. Exact current-image replay receipt pending collection. No actual deliveries. |
+| Repo/quality | Main `0c952f3`, PR #7/#8 merged. New Live intake local suite: **220 Python + Node UI checks pass**; browser/Cloud Run Live verification pending. |
+| Integration | Gemini 3.8 Live runtime identity probe passed in `us-central1`; feature defaults off. Antigravity assigned actual-main integration contracts/gaps. Parser/state patch remains unintegrated. |
 
-**Toronto:** feature freeze **15:30** → submit **16:30** → hard deadline **16:59**.
+**Toronto:** freeze **15:30** → submit **16:30** → hard deadline **16:59**.
 
-**Open:** new release + exact-image audit; parser integration; PR #5 overlap; named teammate lanes and deck/video/submission owner; independent VM gcloud recheck; VM board copy. Brief received; detailed rubric/reuse policy still need confirmation.
+**Open:** full Live WebSocket/tool proof; actual road routing; parser integration; GitHub Pages admin activation; named deck/video/submission owners; detailed rubric/reuse policy.
 
-**Single next action:** commit tested core, apply the existing Metaventions light UI, deploy and verify that exact release.
+**Single next action:** publish the team entry/docs and verify the optional Live intake on Cloud Run before enabling it.

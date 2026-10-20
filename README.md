@@ -1,265 +1,138 @@
-🥗 Seattle Resilient Food Equity & Surplus Broker
-Agents for Impact 2026 — Google Hackathon Challenge 2: Resilient Food Equity & Surplus Broker
-Track: 🛒 Retail & Grocer Rescue | Metro: Seattle, WA | Target Population: Transit-Constrained Food Insecure Households
-Live UI: Streamlit on Google Cloud Run | Reasoning: Gemini 2.0 Flash via Google ADK | Vector Search: BigQuery VECTOR_SEARCH (text-embedding-004)
+# Seattle Resilient Food Equity & Surplus Broker
 
-📌 1. Challenge & Scenario Context
-The Challenge
-Somewhere in Seattle this afternoon, a grocer will discard hundreds of pounds of perfectly good food—not spoiled food, but high-value perishables (fresh greens, berries, dairy, prepared salads) pulled from display. Concurrently, families in Seattle's transit-isolated neighborhoods will skip dinner.
+**Agents for Impact 2026 · Challenge 02 · Retail & grocer rescue · Seattle metro**
 
-This is not a supply failure; it is an urgent matching problem under a compactor clock. The grocer has 3 to 4 hours before the compactor truck arrives. Pantries exist within 3 miles, but making the match requires answering four simultaneous questions before time runs out:
+Turn an urgent surplus offer into a proposed **Match Brief**: an organization and why, what it can take, the pickup deadline and margin, neighborhood context, outreach drafts and up to two eligible alternatives. Recipient acceptance remains a human confirmation.
 
-What just became available? (Unstructured, messy donor offer)
-Who can physically store it? (Walk-in coolers vs. domestic fridges vs. ambient shelving)
-Can they collect it before the compactor runs? (Pickup windows vs. donor deadline)
-Whose community actually needs it most? (Equity and transit-isolation metrics)
-Our Seattle Scenario
-"We coordinate food rescue in Seattle & King County. At 2:10 PM on a Thursday, Ballard Market pulls 12 crates of fresh strawberries, packaged spinach salads, and Greek yogurt. The food must leave their dock by 5:40 PM (3.5 hours) before the compactor truck arrives, and it must remain refrigerated. Traditional keyword search fails because 'spinach' does not match 'fresh greens', and pure semantic search recommends pantries that lack coolers. Our broker matches, verifies cold chain, tests the clock margin, breaks ties on transit equity, and drafts the SMS handoff in under 60 seconds."
+**[Open the live broker](https://seattle-food-broker-6ukbp746xa-ue.a.run.app)** · [Three-minute team pre-read](docs/PRE-READ.md) · [Implementation handoff](docs/IMPLEMENTATION-HANDOFF.md) · [Control board](HACKATHON-BOARD.md)
 
-🏗️ 2. Architecture & Technical Spine
+## Team access
 
-                                  ┌────────────────────────────────────────────────────────┐
-                                  │               COORDINATOR DASHBOARD (UI)               │
-                                  │      Streamlit on Cloud Run (Live Clock, Match Brief)  │
-                                  └───────────────────────────┬────────────────────────────┘
-                                                              │
-                                                              ▼
-                                  ┌────────────────────────────────────────────────────────┐
-                                  │           AGENT RUNNER (ADK on Cloud Run)              │
-                                  │        Gemini 2.0 Flash via Vertex AI ADK SDK          │
-                                  └─────────────┬───────────────────────────┬──────────────┘
-                                                │                           │
-                                                ▼                           ▼
-                     ┌──────────────────────────────────────┐  ┌──────────────────────────────────────┐
-                     │          CUSTOM PYTHON TOOL          │  │          MANAGED MCP SERVER          │
-                     │       (broker_retail_match)          │  │       (BigQuery MCP Server)          │
-                     ├──────────────────────────────────────┤  ├──────────────────────────────────────┤
-                     │ 1. Vector Search Candidate Gen       │  │ • Ad-hoc demographic queries         │
-                     │ 2. Hard Cold-Storage Filter          │  │ • Schema discovery & stats           │
-                     │ 3. Compactor Clock Margin Math       │  │ • Post-matching Equity Audit         │
-                     │ 4. Seattle ACS Equity Tie-Breaker    │  │ • Direct table verification          │
-                     │ 5. "They Said No" Fallback Cascade   │  │                                      │
-                     └──────────────────┬───────────────────┘  └──────────────────┬───────────────────┘
-                                        │                                         │
-                                        ▼                                         ▼
-                     ┌────────────────────────────────────────────────────────────────────────┐
-                     │                        GOOGLE CLOUD PLATFORM                           │
-                     │                                                                        │
-                     │   ┌────────────────────────────────────────────────────────────────┐   │
-                     │   │                    BigQuery: `a4i_food`                        │   │
-                     │   │  • `recipients` (114 Seattle orgs, IRS BMF + archetypes)       │   │
-                     │   │  • `recipients_embedded` (Cosine index on profile vectors)     │   │
-                     │   │  • `shelf_life` (USDA FoodKeeper, 661 items)                   │   │
-                     │   │  • `tract_demographics` (Seattle ACS poverty & vehicle data)   │   │
-                     │   └────────────────────────────────────────────────────────────────┘   │
-                     │                                                                        │
-                     │   ┌────────────────────────────────────────────────────────────────┐   │
-                     │   │           Cloud Firestore / Datastore (State Cache)            │   │
-                     │   │  • Reservation locks (prevent double claiming)                 │   │
-                     │   │  • Recipient decline history ("They said no" tracking)         │   │
-                     │   └────────────────────────────────────────────────────────────────┘   │
-                     └────────────────────────────────────────────────────────────────────────┘
-📁 3. Repository Layout & New Setup Structure
+Use the **direct live link above** for the team demo. This Cloud Run service is public for the hackathon demo. The service-only access change succeeded, and unauthenticated HTTP checks returned **200** for `/`, `/api/health` and `/api/city`. The API uses the existing runtime identity for cloud access.
 
-seattle-food-broker/
-├── README.md                      # Comprehensive Challenge, Architecture & Setup Guide
-├── Dockerfile                     # Cloud Run Container definition (Python 3.11-slim)
-├── requirements.txt               # ADK, BigQuery, GenAI, and Streamlit dependencies
-├── agent/
-│   ├── __init__.py
-│   ├── agent.py                   # ADK Agent setup with Gemini 2.0 Flash
-│   ├── prompts.py                 # Coordinator persona & Match Brief artifact generator
-│   └── tools/
-│       ├── __init__.py
-│       ├── matcher.py             # Custom Tool: BigQuery Vector Search + Constraints + Equity
-│       └── state.py               # Decline tracking ("They said no") & reservation lock state
-├── bq/
-│   ├── 01_embed_profiles.sql      # BigQuery SQL: text-embedding-004 vector generation & IVF index
-│   └── 02_equity_audit.sql        # Rigorous Post-Match Demographic Audit query vs. ACS baseline
-├── ui/
-│   └── app.py                     # Streamlit Coordinator Interface with countdown clock & cascade
-└── scripts/
-    └── deploy.sh                  # Automated Cloud Run zero-cold-start deploy script
-🛠️ 4. Complete Setup & Installation Guide
-Follow these steps in Google Cloud Shell or your local terminal to set up the entire system from scratch.
+For an optional Cloud Shell preview, an already authorized **student Cloud Shell** can also use the proxy:
 
-Step 4.1: Project Configuration & API Enablement
-bash
+```bash
+gcloud run services proxy seattle-food-broker \
+  --project=qwiklabs-gcp-04-b992b9561e32 --region=us-east1 --port=8080
+```
 
-# 1. Set your active Google Cloud Project
-export PROJECT_ID="YOUR_PROJECT_ID"
-gcloud config set project $PROJECT_ID
-# 2. Enable required Google Cloud APIs
-gcloud services enable \
-  bigquery.googleapis.com \
-  aiplatform.googleapis.com \
-  run.googleapis.com \
-  artifactregistry.googleapis.com \
-  cloudbuild.googleapis.com
-Step 4.2: Install Local Python Dependencies
-bash
+Keep that terminal running and open **Web Preview → Preview on port 8080**. On a local machine with existing authorized access, the same proxy serves `http://127.0.0.1:8080`. Direct team-demo access does not require the proxy. Credentials and tokens do not belong in this repository, screenshots or shared notes.
 
-cd seattle-food-broker
-pip install -r requirements.txt
-Step 4.3: Load the Seattle Corpus into BigQuery
-From the repository root, ingest the Seattle snapshot into dataset a4i_food:
+**Verified release snapshot, 20 October 2026:** source `9027ea5`, revision `seattle-food-broker-00004-sxn`. Authenticated smoke checks passed for health, city data, FoodKeeper, a real bakery ADK/MCP match and a cold-capacity refusal. The bakery check returned one proposal plus one alternative; this is execution evidence, not a guarantee of future matches. The city response contained 389 tract points and 119 profiles. Team `main` is `0c952f3`, with PRs #7 and #8 merged; the newer Live intake work is not part of this verified release.
 
-bash
+**Voice status:** a Gemini 3.8 Live audio probe under the runtime identity succeeded in `us-central1`. Browser intake integration is in progress and defaults off; the deployed WebSocket, microphone and end-to-end draft review still need release verification under the chosen public-demo access setting. The existing form remains the working entry path. No GitHub Pages deployment is claimed here.
 
-bash scripts/load.sh seattle
-This populates:
+## Challenge and demo
 
-a4i_food.recipients (114 Seattle food assistance organizations with real IRS revenue).
-a4i_food.surplus_postings (10 test postings across all surplus tracks).
-a4i_food.shelf_life (USDA FoodKeeper, 661 products with shelf life).
-a4i_food.tract_demographics (American Community Survey poverty and vehicle rates for Seattle census tracts).
-Step 4.4: Set up BigQuery Vertex AI Connection & Vector Embeddings
-To enable ML.GENERATE_EMBEDDING in BigQuery:
+A Seattle grocer has mixed surplus and only hours to move it. A semantically relevant pantry may lack refrigeration, sufficient capacity or time to collect. The broker retrieves plausible recipients, then checks physical constraints before proposing a handoff.
 
-bash
+1. Choose the bakery, urgent chilled or capacity-stress preset. Review quantity, storage, actual pickup origin and donor deadline.
+2. Run matching. Inspect the proposal, honest no-match or unresolved facts; inspect rejected candidates and clock margins.
+3. Review the map's aggregate neighborhood indicators and approximate recipient locations.
+4. Copy the Match Brief or outreach draft and confirm operations with the recipient. **The app sends nothing, reserves nothing and dispatches nothing.**
 
-# 1. Create the BigQuery Cloud Resource Connection (if not already existing)
-bq mk --connection --location=US --project_id=$PROJECT_ID --connection_type=CLOUD_RESOURCE vertex_ai_conn
-# 2. Grant Vertex AI User permissions to the BigQuery connection service account
-CONNECTION_SA=$(bq show --connection --format=json US.vertex_ai_conn | grep -o '"serviceAccountId": "[^"]*' | cut -d'"' -f4)
-gcloud projects add-iam-policy-binding $PROJECT_ID \
-  --member="serviceAccount:${CONNECTION_SA}" \
-  --role="roles/aiplatform.user"
-# 3. Create the remote embedding model and materialize recipients_embedded with vector index
-bq query --use_legacy_sql=false < bq/01_embed_profiles.sql
-💻 5. Running & Testing the Setup
-Option A: Running the Coordinator UI Locally
-bash
+The bakery example uses source posting 3: “roughly 200 loaves of day-old bread and pastries from three store locations,” with an explicit **hypothetical one-pallet** capacity test and a 24-hour donor window. It does not convert loaves or crates into pallets. A chilled offer illustrates refrigeration/clock gates; a full-lot stress offer illustrates capacity rejection. Split-load optimization is not implemented.
 
-export PROJECT_ID=$(gcloud config get-value project)
-streamlit run ui/app.py --server.port=8080
-Open the web preview to test the live interactive dashboard:
+## What runs
 
-Adjust the compactor countdown slider (e.g. 3.5 hours).
-Enter the surplus posting: "12 crates of fresh strawberries, spinach salads, and Greek yogurt".
-Click "🚨 Broker Match" to inspect the generated Match Brief.
-Click "❌ Recipient Declined ('They Said No')" to test the automatic cascade to the runner-up.
-Option B: Deploying to Google Cloud Run
-Deploy with a single command:
+```text
+Browser form → FastAPI → ADK Runner / Gemini 2.5 Flash on Vertex
+  → request-bound broker tool → official MCP Toolbox on private loopback
+  → BigQuery AI.EMBED + VECTOR_SEARCH → deterministic feasibility/ranking
+  → final deadline recheck → factual Match Brief + bounded outreach choices
+```
 
-bash
+| Layer | Implementation |
+|---|---|
+| Web/UI | FastAPI with a same-origin HTML/JavaScript interface; Leaflet/OpenStreetMap |
+| Container | Python 3.12; official MCP Toolbox 1.14.0; supervised API and Toolbox processes |
+| Agent | `google-adk==2.12.0`, `google-genai==2.31.0`; broker `gemini-2.5-flash` in `us-east1` |
+| Retrieval | Team-operated Google MCP Toolbox; parameterized read-only `vector_search_recipients`, top 12, COSINE |
+| Embeddings | `gemini-embedding-2`; canonical `a4i_food.recipient_embeddings`, 3,072 dimensions |
+| Identity | Application Default Credentials (ADC); existing Cloud Run runtime service account; no app API key |
+| Project/data | `qwiklabs-gcp-04-b992b9561e32`; Cloud Run `us-east1`; BigQuery dataset `a4i_food` in `US` |
 
-bash scripts/deploy.sh
-Critical Production Flag: scripts/deploy.sh deploys with --min-instances 1 so that your live demo container stays warm in memory, eliminating cold starts when presenting to judges.
+This uses Google's maintained **MCP Toolbox operated by our team**, rather than claiming the separately hosted Google-managed BigQuery MCP service. Runtime dependency pins are in [requirements.txt](requirements.txt).
 
-⚖️ 6. Data Provenance: Real vs. Generated (Judging Defense)
-A judge will ask: "Which half of your data is real?" Here is the exact, honest breakdown:
+Storage, full-lot capacity, pickup timing, service days and bounded explicit acceptance rules are hard gates. Unknown critical facts remain pending. Vehicle refrigeration alone does not prove receiving-site cold storage. The default 15-minute buffer is a coordination policy, not a food-safety guarantee.
 
-Data Layer	Real or Generated?	Source & Technical Methodology
-Organizations & Names	100% Real	IRS Exempt Organizations Business Master File (BMF) filtered by NTEE food/nutrition codes for King County/Seattle (17 U.S.C. § 105 public domain). Real names, addresses, and EINs.
-Reported Revenues	100% Real	IRS Form 990 reported revenues (used to realistically calibrate operations between storefront pantries and regional food banks).
-Operational Constraints	Generated	Cold-storage type (walk_in_cooler, refrigerated, ambient), pallet capacity, and pickup windows are generated from 14 archetypes based on published Seattle/King County public domain profiles and deterministically seeded by EIN.
-Product Expiry	100% Real	USDA FSIS FoodKeeper dataset (661 products, CC0).
-Equity Signals	100% Real	US Census Bureau American Community Survey (ACS) 5-year estimates by census tract (poverty rate, household vehicle access, SNAP).
-🔍 7. Core Differentiators & Edge-Case Solutions
-1. Proof that "Meaning is Not Capacity" (Catching the Decoy)
-The Decoy Case: In our Seattle corpus, an organization writes eloquently about fresh produce: "We believe every neighbor deserves fresh organic salads and greens...".
-The Trap: Pure semantic search scores this organization at 0.94 cosine similarity. However, its physical profile has storage_type = 'ambient'.
-Our Defense: The broker's deterministic constraint filter catches and rejects this organization immediately for perishable postings, preventing food spoilage.
-2. Graceful Recovery: Solving the "They Said No" Problem
-When a pantry declines an offer, coordinators cannot afford to start from scratch:
+Among eligible candidates, ranking is `0.40 × semantic + 0.35 × neighborhood proxy + 0.25 × logistics`. Semantic is `max(0, 1 − cosine distance)`; neighborhood proxy averages poverty and no-vehicle rates; logistics uses transport/dock profile features. Missing neighborhood inputs contribute no score and remain disclosed. These design weights do not establish charity quality, fairness or delivered impact.
 
-Clicking "Recipient Declined ('They Said No')" in the UI immediately appends the recipient's ID to excluded_recipient_ids.
-The agent automatically promotes the pre-computed runner-up without running another raw BigQuery search.
-3. Compactor Clock Safety Margin Math
-Instead of merely checking if an organization is open, our custom tool calculates: 
-Clock Margin
-=
-hours_remaining
-−
-pickup_window_hours
-Clock Margin=hours_remaining−pickup_window_hours Offers are only dispatched if 
-Clock Margin
-≥
-0.5
- hours
-Clock Margin≥0.5 hours.
+The absolute donor deadline persists across unchanged retries. Retrieval and model time consume it, and the broker checks it again before returning. Gemini chooses bounded outreach tone/question ordering; factual recipients, quantities and deadlines come from validated results.
 
-4. Seattle Equity Composite Tie-Breaker
-When multiple pantries qualify operationally, the broker breaks ties using a balanced scoring formula: 
-Score
-=
-0.40
-×
-(
-1
-−
-distance
-)
-+
-0.35
-×
-(
-no_vehicle_rate
-0.15
-)
-+
-0.25
-×
-(
-margin
-hours_remaining
-)
-Score=0.40×(1−distance)+0.35×( 
-0.15
-no_vehicle_rate
-​
- )+0.25×( 
-hours_remaining
-margin
-​
- ) This explicitly weights neighborhoods where families cannot drive to distant grocery stores.
+## Data and evidence
 
-📋 8. The Output Artifact: The Coordinator Match Brief
-The broker outputs a structured, human-readable Match Brief that coordinators can act on instantly:
+| Data | What it establishes—and what it does not |
+|---|---|
+| Recipient corpus | 119 profiles: 110 `generated`, 9 `planted` in the verified city response. IRS-derived identities support the base corpus; operations are generated, and planted organizations may be invented. No profile has verified live operational availability. |
+| `tract_demographics` | ACS-derived aggregate poverty, no-vehicle and assistance indicators. Map points are tract centroids; recipient points are approximate ZIP centroids. These are neighborhood proxies, not household demand or proven service catchments. |
+| `surplus_postings` | Ten starter offers used by the replay audit; capacity assumptions are explicit in [audit-manifest.json](scripts/audit-manifest.json). |
+| FoodKeeper | Pinned [661-product consumer storage/quality reference](data/README.md). Literal product options retain source fields and unresolved applicability. The lookup does not determine remaining freshness, certify commercial cold-chain safety or change the donor deadline. |
+| Map | Illustrative connectors and approximate capability points. Google Directions opens separately; the app does not return verified road routes or driving times. |
 
-markdown
+The earlier `e1fbe03` replay made ten actual MCP retrievals with zero retrieval/evaluation errors: two proposals and eight no-matches against a 389-tract supplied baseline. It predates later acceptance guards. Its proposed-recipient neighborhood means were below the equal-tract baseline: **do not claim measured equity uplift**. Audit denominator and source-clock caveats are in the [handoff](docs/IMPLEMENTATION-HANDOFF.md#release-and-evidence-status).
 
-# 📦 MATCH BRIEF: Retail Food Rescue
-**Donor**: Ballard Market (2840 NW 56th St) | **Offer**: 12 Crates (Cold Chain Required)
-## 🏆 Top Recommendation: Ballard Food Bank
-- **Address**: 1400 NW Leary Way, Seattle, WA 98107
-- **Storage Confirmed**: `walk_in_cooler` | **Capacity**: 45 crates
-- **The Clock**: Pickup window is 1.5h. Compactor clock: 3.5h. **Safety Margin: +2.0h safe**.
-- **Transport**: ✅ Has active refrigerated van.
-- **Neighborhood Equity**: Census Tract 53033004700 — **12.4% No-Vehicle Rate** (vs Seattle Metro avg 7.0%).
-## ✉️ Drafted Outreach (SMS Ready to Send)
-> "Hi Ballard Food Bank team! We have 12 crates of fresh strawberries, yogurt, and packaged salads from Ballard Market. Must be collected within 1.5 hours. Can you accept? Reply YES to confirm."
-## 🔄 Pre-Ranked Fallbacks (Runners-Up Queue)
-1. **Phinney Neighborhood Association Pantry** — Storage: `refrigerated` | Margin: `+1.0h` | Transit Need: `9.8%`
-2. **University District Food Bank** — Storage: `walk_in_cooler` | Margin: `+1.2h` | Transit Need: `18.5%`
-📊 9. Rigor & Judgment: Post-Matching Equity Audit
-We evaluated all 10 evaluation postings using 
-bq/02_equity_audit.sql
-:
+In particular, sealed-formula posting 8 has a historical one-hour clock derived from an after-opening reference despite a 168-hour donor window. Its replay result cannot establish sealed-formula expiry or feasibility. Preserve the receipt and review the source mapping with the team before any corrected replay or data change.
 
-sql
+## Repository map
 
-bq query --use_legacy_sql=false < bq/02_equity_audit.sql
-Metric	Seattle Metro Baseline	Broker Matched Tracts	Equity Gain
-Household No-Vehicle Rate	7.0%	11.8%	+4.8% (Direct transit-desert routing)
-Poverty Rate	10.2%	15.6%	+5.4% (Direct high-need routing)
-SNAP Recipient Rate	8.1%	13.2%	+5.1%
-Audit Finding: Without our equity ranker, pure vector search routed surplus primarily to large food logistics hubs in industrial zones with 2% poverty rates. Our composite score successfully shifted perishable food directly to walk-up storefront pantries serving transit-constrained families.
+```text
+agent/api.py                 API and coordinator UI
+agent/broker.py              ADK orchestration, MCP retrieval, trace, factual brief
+agent/matcher.py             Pure feasibility, acceptance, clock and ranking logic
+agent/tools.yaml             Read-only BigQuery MCP tool configuration
+agent/city.py                Bounded map-data reads and cache
+agent/foodkeeper.py          Advisory reference lookup
+agent/live_intake.py         Optional voice draft adapter; integration in progress
+data/                       FoodKeeper and starter profile components
+notebooks/                  Original exploration and snapshot notebooks
+bq/                         Legacy embedding proposal and single-profile diagnostic
+scripts/serve.py             Toolbox/API process supervisor
+scripts/deploy_cloud_run.sh  Existing-service deployment with account/project guards
+scripts/deploy.sh            Short wrapper for the same deployment path
+scripts/audit_postings.py    Ten-posting MCP replay with explicit assumptions
+scripts/run_audit_job.py     Bounded audit-job supervisor
+scripts/verify_live_release.py Authenticated, sanitized post-release smoke verifier
+tests/                      Python and JavaScript contract/behavior tests
+docs/                       Pre-read, handoff and clearly labeled future designs
+Dockerfile                  Production image; root requirements.txt supplies dependencies
+```
 
-⚠️ 10. Known Limitations (Honest Engineering Tradeoffs)
-Consumer vs. Commercial Shelf Life: USDA FoodKeeper provides consumer home storage guidance, not cold-chain microbiological degradation curves.
-ZIP-Centroid Distances: Straight-line distance between ZIP centroids approximates transit time; production requires Google Maps routing API.
-Simulated Pantry Cold-Chain Telemetry: In production, operational storage states should be kept up-to-date via an automated conversational intake agent rather than static IRS records.
-🎬 11. 3-Minute Video Pitch Script Outline
-0:00 - 0:35 | Slide 1: The Problem & Seattle Scenario: The 4-hour compactor deadline; Seattle's 7% no-vehicle access reality; why retail food rescue fails without real-time constraint matching.
-0:35 - 1:15 | Slide 2: The Technical Spine: BigQuery Vector Search + Hard Deterministic Cold-Storage Filters + Cloud Run. Explain why meaning is not capacity.
-1:15 - 2:15 | Slide 3: Live Demo Walkthrough:
-Input: 12 crates of berries/yogurt with 3.5h compactor deadline.
-Show the generated Match Brief with safety margin and drafted SMS.
-Click "Recipient Declined (They Said No)" 
-→
-→ Show instant cascading to the runner-up.
-2:15 - 3:00 | Slide 4: Equity Audit & Data Honesty:
-Highlight data provenance: IRS Form 990 (Real) vs. Archetypes (Generated).
-Reveal Equity Audit results (+4.8% no-vehicle rate gain).
+## Develop and verify
+
+From the repository root, use Python 3.12 and an existing authorized development environment:
+
+```bash
+python3.12 -m venv .venv
+source .venv/bin/activate
+python -m pip install -r requirements-dev.txt
+python -m pytest tests -q
+node tests/test_ui_contract.js
+```
+
+These tests use mocks/scripted model boundaries and do not establish cloud access. For the full local stack, ADC must already be available and the official Toolbox 1.14.0 binary must be installed for the host architecture. Do not export lab credentials into files. The Docker image already includes Toolbox.
+
+```bash
+export GOOGLE_CLOUD_PROJECT=qwiklabs-gcp-04-b992b9561e32
+export GOOGLE_CLOUD_LOCATION=us-east1
+export GOOGLE_GENAI_USE_VERTEXAI=true
+export GEMINI_MODEL=gemini-2.5-flash
+export TOOLBOX_URL=http://127.0.0.1:5000
+export TOOLBOX_BINARY="$(command -v toolbox)"
+python scripts/serve.py
+```
+
+Open `http://127.0.0.1:8080`. Toolbox stays on loopback port 5000. Serving the process is not proof of model/data permissions; verify actual matching separately. The Docker runtime uses its existing service identity.
+
+API entry points: `GET /api/health` (process only), `/api/scenarios`, `/api/city`, `/api/foodkeeper?query=bread`, `POST /api/match`; schema at `/docs`. Match inputs require a donor, offer text, explicit storage/pallet quantity, coordinates and a positive pickup window of at most 168 hours; an absolute deadline must include its timezone. Results distinguish `success`, deterministic `draft`, `no_viable_match` and `blocked`.
+
+## Release without resetting the lab
+
+The release coordinator runs `bash scripts/deploy.sh` from the reviewed checkout in student Cloud Shell. The script checks the lab account class and project, requires the existing service, preserves its runtime identity/IAM and unrelated environment variables, and deploys the existing dataset path. It does not enable APIs, change billing or reload data. Its warm minimum of one instance consumes runtime resources.
+
+After deployment, run `python scripts/verify_live_release.py --expected-revision ACTUAL_READY_REVISION --output /tmp/release-evidence.json` from that checkout; use a new output filename. It verifies the target and keeps authentication tokens in memory, then records sanitized health/data and real ADK/MCP positive/refusal evidence. A valid no-match remains distinct from a failed runtime. Review the actual deployed UI on desktop and phone as well.
+
+**Do not run `scripts/load.sh` or notebook replacement cells as deployment setup.** They can replace shared tables. `bq/01_embed_profiles.sql` is an isolated, unexecuted legacy `text-embedding-004`/768-dimensional proposal, incompatible with the production corpus. `bq/02_equity_audit.sql` is a read-only selected-profile diagnostic, not the ten-posting audit.
+
+Firestore reservations, decline-state automation, A2A partner negotiation, incentives, verified delivery accounting and production routing are future work. See the [A2A design](docs/A2A-RESCUE-EXCHANGE-PRD.md) and [map/profile plan](docs/MAP-PROFILE-PLAN.md); neither is a deployed feature claim.
