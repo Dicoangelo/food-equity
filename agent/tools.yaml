@@ -37,3 +37,38 @@ parameters:
   - name: query_text
     type: string
     description: Validated donor offer and required storage, no SQL.
+---
+kind: tool
+name: get_recipient_evidence
+type: bigquery-sql
+source: seattle_food_db
+description: >-
+  Read one exact recipient identifier from the existing dataset. At most two rows
+  detect ambiguous duplicate identifiers. This is stored profile evidence, not
+  confirmed availability, eligibility, a current match or a reservation.
+annotations:
+  readOnlyHint: true
+  destructiveHint: false
+statement: |
+  SELECT CAST(recipient_id AS STRING) AS recipient_id,
+         SUBSTR(CAST(name AS STRING), 1, 160) AS name,
+         SUBSTR(CAST(city AS STRING), 1, 160) AS city,
+         SUBSTR(CAST(zip_code AS STRING), 1, 32) AS zip_code,
+         SUBSTR(CAST(archetype AS STRING), 1, 160) AS archetype,
+         SUBSTR(CAST(service_days AS STRING), 1, 160) AS service_days,
+         latitude, longitude, SUBSTR(CAST(cold_storage AS STRING), 1, 40) AS cold_storage,
+         frozen_storage, loading_dock,
+         refrigerated_transport, max_pallets, pickup_window_hours,
+         weekly_households, SUBSTR(CAST(profile_source AS STRING), 1, 40) AS profile_source,
+         SUBSTR(CAST(profile_text AS STRING), 1, 4000) AS profile_text,
+         CHAR_LENGTH(CAST(profile_text AS STRING)) > 4000 AS profile_text_truncated,
+         SUBSTR(CAST(tract_id AS STRING), 1, 100) AS tract_id,
+         tract_poverty_rate, tract_no_vehicle_rate,
+         tract_median_income, tract_dist_km
+  FROM `${GOOGLE_CLOUD_PROJECT}.a4i_food.recipient_embeddings`
+  WHERE CAST(recipient_id AS STRING) = @recipient_id
+  LIMIT 2
+parameters:
+  - name: recipient_id
+    type: string
+    description: One canonical exact recipient ID, never a name, SQL, table or URL.
