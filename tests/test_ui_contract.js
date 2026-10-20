@@ -291,7 +291,7 @@ async function testVoiceIntake() {
     const promise=context.startVoiceSession(mic);
     await tick();
     const socket=sockets.at(-1);
-    socket.receive({type:'ready'});
+    socket.receive({type:'ready',provider_epoch:1,audio_activity:true,input_correlation:true});
     await promise;
     return socket;
   }
@@ -302,23 +302,26 @@ async function testVoiceIntake() {
   assert.equal(initial.type,'context');
   assert.equal(initial.fields.deadline_at,before,'Existing form deadline must be forwarded unchanged');
   assert.equal(initial.fields.donor_lat,scenario.donor_lat);
+  const silentSendCount=socket.sent.length;
   worklets.at(-1).port.onmessage({data:new Int16Array(320).buffer});
-  assert.equal(socket.sent.at(-1).byteLength,640,'Audio uploads are bounded PCM frames');
+  assert.equal(socket.sent.length,silentSendCount,'Silence never opens an activity or uploads PCM');
+  for(let i=0;i<3;i++)worklets.at(-1).port.onmessage({data:new Int16Array(320).fill(2000).buffer});
+  assert.equal(JSON.parse(socket.sent.at(-1)).type,'audio_start','Onset waits for an owned audio_ready before uploading PCM');
   context.playVoiceAudio(new Int16Array([0,32767,-32768]).buffer);
   assert.equal(audioContexts[0].lastRate,24000,'Live audio playback uses the server’s 24 kHz PCM rate');
   assert.equal(audioContexts[0].samples[2],-1);
   assert.equal(audioContexts[0].lastSource.started,true);
-  socket.receive({type:'interrupted'});
+  context.retireVoiceOutput();
   assert.equal(audioContexts[0].lastSource.stopped,true,'Model interruption cancels queued speech');
   const fields={...scenario,posting_text:attack,deadline_at:new Date(Date.now()+3*3600000).toISOString(),hours_remaining:3};
-  const draft={type:'draft',draft_id:'draft-one',draft_version:2,fields,missing_fields:[],ready_for_review:true,deadline_changed:true};
+  const draft={type:'draft',context_only:true,draft_id:'draft-one',draft_version:2,fields,missing_fields:[],ready_for_review:true,deadline_changed:true};
   socket.receive(draft);
   assert.equal(nodes.get('voice-apply').disabled,false);
   assert.equal(nodes.get('voice-draft').children[1].textContent,'Available surplus: '+attack);
-  socket.receive({...draft,draft_version:1,fields:{...fields,posting_text:'stale offer'}});
-  socket.receive({...draft,draft_id:'another-draft',draft_version:3,fields:{...fields,posting_text:'wrong session'}});
+  context.renderVoiceDraft({...draft,draft_version:1,fields:{...fields,posting_text:'stale offer'}});
+  context.renderVoiceDraft({...draft,draft_id:'another-draft',draft_version:3,fields:{...fields,posting_text:'wrong session'}});
   assert.equal(nodes.get('voice-draft').children[1].textContent,'Available surplus: '+attack,'Older versions and foreign draft IDs must not replace the current draft');
-  socket.receive({type:'transcript',role:'model',text:attack,final:true});
+  context.appendVoiceTranscript({type:'transcript',role:'model',text:attack,final:true});
   assert.equal(nodes.get('voice-transcript').children[0].textContent,'Intake agent: '+attack);
   socket.receive('null'); // malformed but valid JSON must not break the session.
   const lateMessage=socket.onmessage;
@@ -352,7 +355,7 @@ async function testVoiceIntake() {
   const sendText=context.sendVoiceText();
   await tick();
   const textSocket=sockets.at(-1);
-  textSocket.receive({type:'ready'});
+  textSocket.receive({type:'ready',provider_epoch:1,audio_activity:true,input_correlation:true});
   await sendText;
   assert.equal(micRequests,1,'An explicit typed Send starts its session without microphone access');
   assert.equal(JSON.parse(textSocket.sent.at(-1)).type,'text');
@@ -361,7 +364,7 @@ async function testVoiceIntake() {
   const beforeInvalid=nodes.get('input-text').value;
   context.applyVoiceDraft();
   assert.equal(nodes.get('input-text').value,beforeInvalid);
-  textSocket.receive({...draft,draft_id:'text-draft',draft_version:2,fields:{...fields,pallet_count:'1'}});
+  context.renderVoiceDraft({...draft,draft_id:'text-draft',draft_version:2,fields:{...fields,pallet_count:'1'}});
   assert.equal(nodes.get('voice-apply').disabled,true,'Numeric strings must not bypass validation');
   context.offerChanged();
   assert.equal(textSocket.closed,true,'Editing the form ends a session whose context is now stale');
@@ -370,7 +373,7 @@ async function testVoiceIntake() {
   context.navigator.mediaDevices.getUserMedia=()=>{micRequests++;return new Promise(resolve=>{resolvePermission=resolve;});};
   const pending=context.startVoiceSession(true);
   await tick();
-  sockets.at(-1).receive({type:'ready'});
+  sockets.at(-1).receive({type:'ready',provider_epoch:1,audio_activity:true,input_correlation:true});
   await tick();
   assert.equal(typeof resolvePermission,'function');
   context.stopVoiceSession();
@@ -382,7 +385,7 @@ async function testVoiceIntake() {
 
   context.navigator.mediaDevices.getUserMedia=async()=>{throw new Error('Permission denied');};
   const denied=context.startVoiceSession(true);
-  await tick(); sockets.at(-1).receive({type:'ready'}); await denied;
+  await tick(); sockets.at(-1).receive({type:'ready',provider_epoch:1,audio_activity:true,input_correlation:true}); await denied;
   assert.equal(sockets.at(-1).closed,true);
   assert.match(nodes.get('voice-status').textContent,/typed note/);
   assert.equal(nodes.get('voice-send').disabled,false,'Permission failure leaves explicit typed fallback available');

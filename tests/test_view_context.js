@@ -103,4 +103,29 @@ assert.equal(view.snapshot().sources[0].status,'stale');
 assert.match(content(node('source-state-summary')),/stale/);
 view.dispose();
 assert.equal(timers.size,0);
+// Primary evidence keeps unknown distinct from literal zero and uses readable decisions.
+receipts.reset();ownership=owner();assert(receipts.begin(ownership));
+const evidenceRead=(call,payload)=>receipts.accept({...ownership,call_id:call,outcome:'applied',effect:'read_only',
+  resulting_revision:ownership.expected_view_revision,payload:{authority:'untrusted_browser_projection',...payload}});
+assert(evidenceRead('unknown-capacity',{reported_recipient:{recipient_id:'known',name:'Unknown capacity',constraint_status:'needs_confirmation',
+  max_pallets:null,pickup_window_hours:null,cold_storage:null,profile_source:'generated',confirmations_required:['Confirm storage with the coordinator.']}}));
+assert.match(content(node('voice-action-receipt')),/Reported capacity: Unknown pallets.*pickup window: Unknown hours/);
+assert.match(content(node('voice-action-receipt')),/Needs confirmation.*generated profile/);
+assert(evidenceRead('zero-capacity',{reported_recipient:{recipient_id:'zero',name:'Zero capacity',constraint_status:'rejected',max_pallets:0,
+  pickup_window_hours:0,cold_storage:'dry',profile_source:'planted',elimination_reasons:['Capacity is insufficient.']}}));
+assert.match(content(node('voice-action-receipt')),/Reported capacity: 0 pallets.*pickup window: 0 hours/);
+assert.match(content(node('voice-action-receipt')),/Rejected for this offer.*planted profile/);
+for(const [status,message] of [['none',/No match has been evaluated/],['blocked',/This is not a no-match result/],
+  ['no_viable_match',/completed evaluation reported no viable match/]]) {
+  assert(evidenceRead('state-'+status,{reported_result:{status,winner_id:null,alternative_ids:[],candidates:[]}}));
+  assert.match(content(node('voice-action-receipt')),message);
+}
+assert(evidenceRead('long-evidence',{reported_recipient:{recipient_id:'long',name:'<img src=x onerror=attack()>',constraint_status:'needs_confirmation',
+  confirmations_required:Array.from({length:8},(_,i)=>'Confirm '+i+' '+ 'x'.repeat(500))}}));
+assert.match(content(node('voice-action-receipt')),/Reason excerpts are shortened/);
+assert.match(content(node('voice-action-receipt')),/<img src=x onerror=attack\(\)>/);
+assert(!node('voice-action-receipt').children.some(child=>child.tagName==='IMG'));
+assert.equal(node('voice-action-receipt').children.at(-1).tagName,'DETAILS');
+receipts.retire();assert.equal(receipts.begin(ownership),false,'A retired owner can never be restarted within this browser session');
+receipts.reset();view.dispose();
 console.log('View context: pure bounded projection, exact clock, source parity, no-fetch reads, owned receipts, stale/duplicate refusal and draft-only effects passed.');

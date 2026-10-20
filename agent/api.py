@@ -805,7 +805,8 @@ def index_dashboard():
     const voice = {enabled:false, config:null, socket:null, starting:false, ready:false, generation:0,
       stream:null, inputContext:null, outputContext:null, source:null, worklet:null, workletURL:null,
       playback:new Set(), nextPlayback:0, timer:null, viewTimer:null, resolveReady:null, initialDraftSeen:false,
-      draft:null, draftId:null, draftVersion:-1, transcript:[], sentBytes:0};
+      draft:null, draftId:null, draftVersion:-1, transcript:[], sentBytes:0, providerEpoch:0, recovering:false,
+      awaitingRecovery:false, pendingText:null, inputCounter:0, expectedStart:null, pendingViewRevision:null, activityCounter:0, activity:null, onset:[], quietFrames:0, needsQuiet:false};
     function voiceStatus(message) { document.getElementById('voice-status').textContent = message; }
     function flushVoiceView() {
       if (voice.viewTimer) { clearTimeout(voice.viewTimer); voice.viewTimer = null; }
@@ -829,8 +830,8 @@ def index_dashboard():
       const available = voice.enabled && !matchInFlight;
       document.getElementById('voice-start').disabled = !available || !!voice.socket || voice.starting;
       document.getElementById('voice-stop').disabled = !voice.socket && !voice.starting;
-      document.getElementById('voice-send').disabled = !available || voice.starting
-        || (typeof ViewActionReceipts !== 'undefined' && ViewActionReceipts.busy());
+      document.getElementById('voice-send').disabled = !available || voice.starting;
+      document.getElementById('voice-send').textContent = voice.recovering || voice.awaitingRecovery ? 'Queue correction' : 'Send note';
       document.getElementById('voice-text').disabled = !available;
       document.getElementById('voice-apply').disabled = matchInFlight || !voice.draft?.ready_for_review
         || voiceDraftErrors(voice.draft).length > 0;
@@ -928,6 +929,9 @@ def index_dashboard():
       voice.generation += 1;
       voice.starting = false;
       voice.ready = false;
+      voice.recovering = voice.awaitingRecovery = false;
+      voice.pendingText = null; voice.expectedStart = null; voice.pendingViewRevision = null;
+      resetVoiceActivity();
       if (voice.timer) { clearTimeout(voice.timer); voice.timer = null; }
       if (voice.viewTimer) { clearTimeout(voice.viewTimer); voice.viewTimer = null; }
       if (typeof ViewActionReceipts !== 'undefined') ViewActionReceipts.reset();
@@ -936,7 +940,7 @@ def index_dashboard():
       voice.socket = null;
       if (socket) {
         socket.onopen = socket.onmessage = socket.onerror = socket.onclose = null;
-        if (socket.readyState === 1) { try { socket.send(JSON.stringify({type:'audio_end'})); socket.send(JSON.stringify({type:'stop'})); } catch (_) {} }
+        if (socket.readyState === 1) { try { socket.send(JSON.stringify({type:'stop'})); } catch (_) {} }
         try { socket.close(); } catch (_) {}
       }
       if (voice.stream) voice.stream.getTracks().forEach(track => { track.onended = null; track.stop(); });
@@ -976,6 +980,102 @@ def index_dashboard():
       }
       registerProcessor('offer-pcm',OfferPCM);
     `;
+    function resetVoiceActivity(requireQuiet = false) {
+      voice.activity = null;
+      voice.onset = [];
+      voice.quietFrames = 0;
+      voice.needsQuiet = requireQuiet;
+    }
+    function retireVoiceOutput() {
+      flushVoicePlayback();
+      voice.transcript.forEach(item => { item.final = true; });
+      if (typeof ViewActionReceipts !== 'undefined') ViewActionReceipts.retire();
+    }
+    function currentVoiceEvent(message) {
+      return !voice.recovering && !voice.awaitingRecovery && message.provider_epoch === voice.providerEpoch
+        && typeof ViewActionReceipts !== 'undefined' && ViewActionReceipts.owns(message);
+    }
+    function sendVoiceFrame(frame, activity) {
+      if (!voice.ready || voice.socket?.readyState !== 1 || !activity?.ready || activity.epoch !== voice.providerEpoch) return;
+      if (voice.socket.bufferedAmount > 262144 || voice.sentBytes + frame.byteLength > 10000000) {
+        stopVoiceSession('Audio upload reached its limit or the network fell behind. Review the draft or start a new session.'); return;
+      }
+      const packet = new ArrayBuffer(frame.byteLength + 8), header = new DataView(packet);
+      header.setUint32(0,activity.epoch); header.setUint32(4,activity.id);
+      new Uint8Array(packet,8).set(new Uint8Array(frame));
+      voice.sentBytes += frame.byteLength;
+      voice.socket.send(packet);
+    }
+    function endVoiceActivity(activity) {
+      if (activity?.ready && voice.socket?.readyState === 1)
+        voice.socket.send(JSON.stringify({type:'audio_end',provider_epoch:activity.epoch,activity_id:activity.id}));
+      resetVoiceActivity();
+    }
+    function captureVoiceFrame(frame) {
+      if (!voice.ready || voice.socket?.readyState !== 1 || !(frame instanceof ArrayBuffer) || frame.byteLength !== 640) return;
+      const samples = new DataView(frame); let energy = 0;
+      for (let i=0;i<320;i++) { const sample=samples.getInt16(i*2,true)/32768; energy += sample*sample; }
+      const speaking = Math.sqrt(energy/320) >= 0.018;
+      if (voice.needsQuiet) {
+        voice.quietFrames = speaking ? 0 : voice.quietFrames + 1;
+        if (voice.quietFrames >= 25) { voice.needsQuiet = false; voice.quietFrames = 0; }
+        return;
+      }
+      // Recovery discards old speech; only the triggering onset may wait for audio_ready.
+      if ((voice.recovering || voice.awaitingRecovery) && !voice.activity) return;
+      if (!voice.activity) {
+        if (!speaking) { voice.onset=[]; return; }
+        voice.onset.push(frame);
+        if (voice.onset.length < 3) return;
+        if (voice.viewTimer) flushVoiceView();
+        const active = typeof ViewActionReceipts !== 'undefined' && ViewActionReceipts.busy();
+        if (active) { retireVoiceOutput(); voice.awaitingRecovery = true; }
+        else flushVoicePlayback();
+        const activity = {id:++voice.activityCounter,epoch:voice.providerEpoch,ready:false,frames:voice.onset,ended:false,discarded:false};
+        voice.activity = activity; voice.onset = []; voice.quietFrames = 0;
+        voice.expectedStart={kind:'audio',id:activity.id};
+        if (typeof ViewActionReceipts !== 'undefined') ViewActionReceipts.expectTurn();
+        voice.socket.send(JSON.stringify({type:'audio_start',provider_epoch:activity.epoch,activity_id:activity.id}));
+        return;
+      }
+      const activity = voice.activity;
+      if (activity.ended) return;
+      voice.quietFrames = speaking ? 0 : voice.quietFrames + 1;
+      if (activity.ready) sendVoiceFrame(frame,activity);
+      else if (activity.frames.length < 100) activity.frames.push(frame);
+      else {
+        activity.frames=[]; activity.discarded=true; activity.ended=true;
+        voiceStatus('The audio connection is taking longer than expected. Pause, then repeat your correction when ready.');
+      }
+      if (voice.quietFrames >= 25) {
+        activity.ended=true;
+        if (activity.ready) endVoiceActivity(activity);
+      }
+    }
+    function receiveVoiceAudioReady(message) {
+      const activity=voice.activity;
+      if (!activity || message.provider_epoch!==voice.providerEpoch || message.activity_id!==activity.id || !currentVoiceEvent(message)) return;
+      activity.epoch=message.provider_epoch; activity.ready=true;
+      voice.awaitingRecovery=false;
+      if (activity.discarded) {
+        resetVoiceActivity(true); retireVoiceOutput(); voice.awaitingRecovery=true;
+        voice.socket.send(JSON.stringify({type:'interrupt',provider_epoch:voice.providerEpoch}));
+        voiceStatus('The audio connection was too slow. Updating the session; pause, then repeat your correction.');
+        return;
+      }
+      activity.frames.forEach(frame=>sendVoiceFrame(frame,activity));
+      activity.frames=[];
+      if (activity.ended) endVoiceActivity(activity);
+    }
+    function sendPendingVoiceText() {
+      if (!voice.pendingText || voice.recovering || !voice.ready || voice.socket?.readyState!==1) return;
+      const text=voice.pendingText; voice.pendingText=null;
+      flushVoiceView();
+      if (typeof ViewActionReceipts !== 'undefined') ViewActionReceipts.expectTurn();
+      voice.expectedStart={kind:'text',id:++voice.inputCounter};
+      voice.socket.send(JSON.stringify({type:'text',text,request_id:voice.expectedStart.id}));
+      voiceStatus('Correction sent. Review the proposed changes before applying them.');
+    }
     async function startVoiceMicrophone(generation) {
       if (!navigator.mediaDevices?.getUserMedia || typeof AudioWorkletNode === 'undefined') throw new Error('Microphone capture is unavailable in this browser.');
       const stream = await navigator.mediaDevices.getUserMedia({audio:{channelCount:1,echoCancellation:true,noiseSuppression:true},video:false});
@@ -995,14 +1095,7 @@ def index_dashboard():
       voice.worklet = new AudioWorkletNode(ctx,'offer-pcm');
       voice.source = ctx.createMediaStreamSource(stream);
       voice.worklet.port.onmessage = event => {
-        if (generation !== voice.generation || !voice.ready || voice.socket?.readyState !== 1) return;
-        if (voice.viewTimer) flushVoiceView();
-        const bytes = event.data.byteLength;
-        if (voice.socket.bufferedAmount > 262144 || voice.sentBytes + bytes > 10000000) {
-          stopVoiceSession('Audio upload reached its limit or the network fell behind. Review the draft or start a new session.'); return;
-        }
-        voice.sentBytes += bytes;
-        voice.socket.send(event.data);
+        if (generation === voice.generation) captureVoiceFrame(event.data);
       };
       voice.source.connect(voice.worklet);
       voice.worklet.connect(ctx.destination); // The worklet emits silence; no microphone loopback.
@@ -1018,6 +1111,9 @@ def index_dashboard():
       voice.initialDraftSeen = false;
       voice.transcript = [];
       voice.sentBytes = 0;
+      voice.providerEpoch = 0; voice.activityCounter = 0; voice.inputCounter = 0; voice.expectedStart = null; voice.pendingViewRevision = null;
+      voice.recovering = voice.awaitingRecovery = false; voice.pendingText = null;
+      resetVoiceActivity();
       document.getElementById('voice-transcript').replaceChildren();
       document.getElementById('voice-review').classList.add('hidden');
       refreshVoiceControls();
@@ -1036,15 +1132,17 @@ def index_dashboard():
         voice.timer = setTimeout(()=>stopVoiceSession('Live intake did not connect. Use the form or try again.'),20000);
         socket.onmessage = event => {
           if (generation !== voice.generation) return;
-          if (event.data instanceof ArrayBuffer) {
-            if (typeof ViewActionReceipts === 'undefined' || ViewActionReceipts.current()) playVoiceAudio(event.data);
-            return;
-          }
+          // Provider audio must carry the same epoch and turn ownership as text.
+          if (event.data instanceof ArrayBuffer) return;
           if (typeof event.data !== 'string' || event.data.length > 65536) return;
           let message;
           try { message = JSON.parse(event.data); } catch (_) { return; }
           if (!message || typeof message !== 'object') return;
           if (message.type === 'ready' && !voice.ready) {
+            if (!Number.isInteger(message.provider_epoch) || message.provider_epoch < 1 || message.audio_activity !== true || message.input_correlation !== true) {
+              stopVoiceSession('Live intake needs a compatible connection. Continue with the offer form.'); return;
+            }
+            voice.providerEpoch = message.provider_epoch;
             if (typeof ViewContext !== 'undefined') socket.send(JSON.stringify({type:'view_context',context:ViewContext.snapshot()}));
             socket.send(JSON.stringify({type:'context',fields:voiceFormContext()}));
             voice.ready = true;
@@ -1056,28 +1154,60 @@ def index_dashboard():
             refreshVoiceControls();
           } else if (message.type === 'view_context_ack') {
             if (message.status !== 'accepted') stopVoiceSession('The view snapshot was refused. Review the current view and restart intake.');
-          } else if (message.type === 'turn_started' && typeof ViewActionReceipts !== 'undefined') {
-            if (!ViewActionReceipts.begin(message)) stopVoiceSession('A response belonged to an older view. Restart intake from the current view.');
+            else if (message.recovery_required === false && message.view_revision === voice.pendingViewRevision
+                && !voice.recovering && voice.awaitingRecovery && !voice.expectedStart) {
+              voice.pendingViewRevision=null; voice.awaitingRecovery=false;
+              voiceStatus('Current view received. Continue with a note or speak when the microphone is on.');
+              sendPendingVoiceText(); refreshVoiceControls();
+            }
+          } else if (message.type === 'recovering') {
+            if (!Number.isInteger(message.provider_epoch) || message.provider_epoch <= voice.providerEpoch) return;
+            voice.providerEpoch=message.provider_epoch; voice.recovering=true; voice.awaitingRecovery=false; voice.pendingViewRevision=null;
+            retireVoiceOutput();
+            if (message.reason !== 'audio_correction') resetVoiceActivity(!!voice.stream);
+            voiceStatus(`Updating the live session for your correction. Keep this page open.${Number.isInteger(message.recovery_count) ? ` Recovery ${message.recovery_count} of 3.` : ''}`);
             refreshVoiceControls();
-          } else if (message.type === 'action_result' && typeof ViewActionReceipts !== 'undefined') {
+          } else if (message.type === 'resumed') {
+            if (!voice.recovering || message.provider_epoch !== voice.providerEpoch) return;
+            voice.recovering=false;
+            voiceStatus(voice.stream ? 'Ready again. Pause briefly, then speak your next correction.' : 'Ready again. Continue with a note or review the draft.');
+            sendPendingVoiceText(); refreshVoiceControls();
+          } else if (message.type === 'turn_started' && typeof ViewActionReceipts !== 'undefined') {
+            if (voice.recovering || message.provider_epoch!==voice.providerEpoch || !voice.expectedStart) return;
+            const expected=voice.expectedStart;
+            if ((expected.kind==='text' ? message.request_id : message.activity_id)!==expected.id) return;
+            if (ViewActionReceipts.begin(message)) {
+              voice.awaitingRecovery=false; voice.expectedStart=null;
+              if (voice.pendingText) { retireVoiceOutput(); voice.awaitingRecovery=true; sendPendingVoiceText(); }
+            }
+            refreshVoiceControls();
+          } else if (message.type === 'audio_ready') {
+            receiveVoiceAudioReady(message);
+          } else if (message.type === 'action_result' && currentVoiceEvent(message)) {
             ViewActionReceipts.accept(message);
             refreshVoiceControls();
-          } else if (message.type === 'draft') {
-            if (typeof ViewActionReceipts === 'undefined' || (!voice.initialDraftSeen && !ViewActionReceipts.current())) {
+          } else if (message.type === 'draft' && message.context_only === true) {
+            if (!voice.initialDraftSeen && !voice.recovering && !voice.awaitingRecovery) {
               voice.initialDraftSeen = true; renderVoiceDraft(message);
             }
-          } else if (message.type === 'transcript') {
-            if (typeof ViewActionReceipts === 'undefined' || ViewActionReceipts.owns(message)) appendVoiceTranscript(message);
-          } else if (message.type === 'interrupted') {
-            if (typeof ViewActionReceipts === 'undefined') flushVoicePlayback();
-            else stopVoiceSession('The turn was interrupted. Restart intake so its actions belong to the current view.');
-          } else if (message.type === 'turn_complete') {
-            if (typeof ViewActionReceipts === 'undefined' || ViewActionReceipts.finish(message)) {
+          } else if (message.type === 'transcript' && currentVoiceEvent(message)) {
+            appendVoiceTranscript(message);
+          } else if (message.type === 'audio' && currentVoiceEvent(message)) {
+            if (typeof message.pcm !== 'string' || message.pcm.length > 48000) return;
+            try { const binary=atob(message.pcm), bytes=new Uint8Array(binary.length);
+              for(let i=0;i<binary.length;i++)bytes[i]=binary.charCodeAt(i);
+              playVoiceAudio(bytes.buffer);
+            } catch (_) {} // Malformed audio cannot alter the draft or turn owner.
+          } else if (message.type === 'interrupted' && currentVoiceEvent(message)) {
+            retireVoiceOutput(); resetVoiceActivity(!!voice.stream); voice.awaitingRecovery=true;
+            voiceStatus('The previous response was interrupted. Updating the live session…');
+          } else if (message.type === 'turn_complete' && currentVoiceEvent(message)) {
+            if (ViewActionReceipts.finish(message)) {
+              if (voice.activity) resetVoiceActivity(!!voice.stream);
               voice.transcript.forEach(item=>{item.final=true;}); refreshVoiceControls();
             }
-          } else if (message.type === 'status') {
-            if (typeof ViewActionReceipts === 'undefined' || !ViewActionReceipts.busy() || ViewActionReceipts.owns(message))
-              voiceStatus(String(message.message || 'Live intake connected.').slice(0,1000));
+          } else if (message.type === 'status' && currentVoiceEvent(message)) {
+            voiceStatus(String(message.message || 'Live intake connected.').slice(0,1000));
           }
           else if (message.type === 'error') stopVoiceSession(String(message.message || 'Live intake is unavailable. Use the offer form.').slice(0,1000));
         };
@@ -1101,15 +1231,24 @@ def index_dashboard():
     async function sendVoiceText() {
       const input = document.getElementById('voice-text'), text = input.value.trim();
       if (!voice.enabled || matchInFlight || voice.starting || !text || text.length > 4000) return;
-      if (typeof ViewActionReceipts !== 'undefined' && ViewActionReceipts.busy()) return;
       const ready = voice.ready || await startVoiceSession(false);
       if (!ready || voice.socket?.readyState !== 1) return;
+      resetVoiceActivity(!!voice.stream);
+      if (voice.recovering || voice.awaitingRecovery) {
+        voice.pendingText=text; input.value='';
+        voiceStatus('Correction queued. The latest note will be sent when the live session is ready.');
+        return;
+      }
+      const active=typeof ViewActionReceipts !== 'undefined' && ViewActionReceipts.busy();
+      if (active) { retireVoiceOutput(); voice.awaitingRecovery=true; }
+      else flushVoicePlayback();
       flushVoiceView();
       if (typeof ViewActionReceipts !== 'undefined') ViewActionReceipts.expectTurn();
-      voice.socket.send(JSON.stringify({type:'text',text}));
+      voice.expectedStart={kind:'text',id:++voice.inputCounter};
+      voice.socket.send(JSON.stringify({type:'text',text,request_id:voice.expectedStart.id}));
       refreshVoiceControls();
       input.value = '';
-      voiceStatus('Note sent. Review the intake agent’s draft before applying it.');
+      voiceStatus(active ? 'Correction sent. Updating the previous response…' : 'Note sent. Review the intake agent’s draft before applying it.');
     }
     function applyVoiceDraft() {
       const draft = voice.draft;
@@ -1659,9 +1798,12 @@ def index_dashboard():
     window.onload = () => {
       if (typeof ViewContext !== 'undefined') ViewContext.onChange(() => {
         if (!voice.ready || voice.socket?.readyState !== 1) return;
+        flushVoicePlayback();
         if (ViewActionReceipts.busy()) {
-          stopVoiceSession('The displayed view changed during the turn. Restart intake to use the updated evidence.');
-          return;
+          retireVoiceOutput(); resetVoiceActivity(!!voice.stream); voice.expectedStart=null;
+          voice.awaitingRecovery=true; voice.pendingViewRevision=ViewContext.snapshot().view_revision;
+          refreshVoiceControls();
+          voiceStatus('Updating the live session to use the current map and profile selection…');
         }
         if (voice.viewTimer) clearTimeout(voice.viewTimer);
         const generation = voice.generation;
