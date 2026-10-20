@@ -11,7 +11,9 @@
       "format": "PNG",
       "mode": "RGB",
       "bytes": 2023202,
-      "sha256": "f0e414afe089fc7b21779c88900aa11f1c6d50ebe716d34006e4ef178fecf422"
+      "sha256": "f0e414afe089fc7b21779c88900aa11f1c6d50ebe716d34006e4ef178fecf422",
+      "delivered_bytes": 1760181,
+      "delivered_sha256": "b854d8d192a90924740b99889d3e7c06bbff3a41aa2fc16554bc670301cce21c"
     },
     {
       "file": "review-crate-spot.png",
@@ -33,7 +35,10 @@
         0,
         0,
         0
-      ]
+      ],
+      "delivered_bytes": 1452386,
+      "delivered_sha256": "a5a2d1d4d44feacbd9452beb187acd42b01ec3a77f5ca05bb86525559e80a9c2"
     }
-  ]
+  ],
+  "delivery_preparation": "Lossless OptiPNG optimization; pixels and alpha preserved."
 }

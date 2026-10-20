@@ -399,6 +399,21 @@ def companion_script():
     return FileResponse(Path(__file__).parent / "ui/companion.js", media_type="text/javascript")
 
 
+@app.get("/ui/cinematic-intro.js", include_in_schema=False)
+def cinematic_intro_script():
+    return FileResponse(Path(__file__).parent / "ui/cinematic-intro.js", media_type="text/javascript")
+
+
+@app.get("/ui/cinematic-intro.css", include_in_schema=False)
+def cinematic_intro_style():
+    return FileResponse(Path(__file__).parent / "ui/cinematic-intro.css", media_type="text/css")
+
+
+@app.get("/ui/food-equity-story-v1.mp4", include_in_schema=False)
+def cinematic_intro_video():
+    return FileResponse(Path(__file__).parent / "ui/food-equity-story-v1.mp4", media_type="video/mp4")
+
+
 @app.get("/ui/companion.css", include_in_schema=False)
 def companion_style():
     return FileResponse(Path(__file__).parent / "ui/companion.css", media_type="text/css")
@@ -445,6 +460,7 @@ def index_dashboard():
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
   <link rel="stylesheet" href="/ui/workspace.css">
   <link rel="stylesheet" href="/ui/companion.css">
+  <link rel="stylesheet" href="/ui/cinematic-intro.css">
   <link rel="stylesheet" href="/ui/intake-review.css">
   <link rel="stylesheet" href="/ui/recipient-explorer.css">
 </head>
@@ -2219,6 +2235,7 @@ def index_dashboard():
   <script src="/ui/workspace.js"></script>
   <script src="/ui/recipient-explorer.js"></script>
   <script src="/ui/companion.js"></script>
+  <script src="/ui/cinematic-intro.js"></script>
   <script src="/ui/intake-review.js"></script>
 
 </body>

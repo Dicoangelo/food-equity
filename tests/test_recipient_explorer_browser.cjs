@@ -40,8 +40,8 @@ const server = http.createServer((req,res) => {
   if(req.url === '/') {res.setHeader('content-type','text/html');return res.end(fixtureHtml());}
   if(req.url.startsWith('/ui/')) {
     const name=req.url.slice('/ui/'.length);
-    if(!['intake-review.js','intake-review.css','food-rescue-network.png','review-crate-spot.png','companion.js','companion.css','alert-intake.js','recipient-explorer.js','recipient-explorer.css','offer-workflow.js','source-state.js','view-context.js','workspace.css','workspace.js'].includes(name)) {res.writeHead(404);return res.end();}
-    res.setHeader('content-type',name.endsWith('.png')?'image/png':name.endsWith('.js')?'text/javascript':'text/css');
+    if(!['cinematic-intro.js','cinematic-intro.css','food-equity-story-v1.mp4','intake-review.js','intake-review.css','food-rescue-network.png','review-crate-spot.png','companion.js','companion.css','alert-intake.js','recipient-explorer.js','recipient-explorer.css','offer-workflow.js','source-state.js','view-context.js','workspace.css','workspace.js'].includes(name)) {res.writeHead(404);return res.end();}
+    res.setHeader('content-type',name.endsWith('.mp4')?'video/mp4':name.endsWith('.png')?'image/png':name.endsWith('.js')?'text/javascript':'text/css');
     return res.end(fs.readFileSync(path.join(root,'agent/ui',name)));
   }
   if(req.url === '/api/scenarios') return json(scenarios);
