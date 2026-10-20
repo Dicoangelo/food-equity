@@ -129,3 +129,45 @@ async def test_owned_action_receipt_is_required_before_accepting_proposal(mode):
     assert report['passed'] is (mode=='success')
     if mode=='success':assert report['action_ownership_verified']
     else:assert report['error_code']=='action_owner_mismatch'
+
+
+class CorrelatedSocket(Socket):
+    def __init__(self,mode='success'):
+        super().__init__(mode)
+        self.events.get_nowait()
+        self.events.put_nowait(json.dumps({'type':'ready','model':MODEL,'location':LOCATION,
+            'provider_epoch':1,'input_correlation':True,'audio_activity':True}))
+    async def send(self,text):
+        import base64
+        event=json.loads(text)
+        if event['type']!='text':
+            return await super().send(text)
+        self.sent.append(event)
+        assert event['request_id']==1
+        self.fields['pallet_count']=2
+        owner={'turn_id':'turn-current','expected_offer_revision':0,'expected_view_revision':0,'provider_epoch':1}
+        await self.events.put(json.dumps({'type':'turn_started',**owner,'request_id':0 if self.mode=='input' else 1}))
+        if self.mode=='binary':await self.events.put(b'\0\0')
+        await self.events.put(json.dumps({'type':'audio',**owner,
+            'provider_epoch':2 if self.mode=='audio' else 1,'pcm':base64.b64encode(b'\0'*240).decode()}))
+        await self.events.put(json.dumps({'type':'transcript',**owner,'text':'SYNTHETIC'}))
+        await self.events.put(json.dumps({'type':'action_result','effect':'draft_proposed','outcome':'applied',
+            **owner,'payload':{'draft':self.snapshot(2)}}))
+        await self.events.put(json.dumps({'type':'turn_complete',**owner,
+            'turn_id':'old' if self.mode=='completion' else owner['turn_id']}))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('mode,code',[
+    ('success',None),('input','input_owner_mismatch'),('audio','output_owner_mismatch'),
+    ('binary','unowned_audio'),('completion','completion_owner_mismatch')])
+async def test_correlated_owned_audio_and_completion_protocol(mode,code):
+    socket=CorrelatedSocket(mode)
+    result=await probe('https://demo.run.app',connector=connection(socket,{}),now=NOW)
+    assert result['passed'] is (code is None)
+    if code:assert result['error_code']==code
+    else:
+        assert result['audio_bytes_received']==240
+        assert result['deadline_preserved'] and result['action_ownership_verified']
+    assert 'SYNTHETIC' not in json.dumps(result)
+    assert socket.closed and socket.sent[-1]['type']=='stop'
