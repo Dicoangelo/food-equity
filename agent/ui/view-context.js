@@ -113,6 +113,7 @@ const ViewContext = (() => {
     if(kind==='result') { evaluatedOfferRevision=offerRevision; receivedAt=new Date().toISOString(); }
     if(kind==='clear_result') { evaluatedOfferRevision=null; receivedAt=null; }
     viewRevision+=1;
+    if(typeof ViewActionReceipts!=='undefined') ViewActionReceipts.invalidateEvidence();
     renderSources();
     scheduleExpiry();
     notify?.();
@@ -135,7 +136,7 @@ const ViewContext = (() => {
 
 /* UI receipts have the same session/turn/view ownership as the server tools. */
 const ViewActionReceipts = (() => {
-  let owner=null, waiting=false;
+  let owner=null, waiting=false, evidenceVisible=false;
   const calls=new Set();
   const panel=()=>document.getElementById('voice-action-receipt');
   const safeText=(value,max=300)=>typeof value==='string'?value.slice(0,max):'Unknown';
@@ -188,6 +189,7 @@ const ViewActionReceipts = (() => {
   }
   const render=(message,detail)=>{
     const target=panel();if(!target)return;
+    evidenceVisible=!!detail;
     target.replaceChildren(textNode('p',message));
     if(detail) {
       renderEvidence(target,detail);
@@ -242,5 +244,8 @@ const ViewActionReceipts = (() => {
   }
   function finish(message) { if(!owns(message))return false;owner=null;waiting=false;return true; }
   function reset() { owner=null;waiting=false;calls.clear(); }
-  return {begin,owns,accept,finish,reset,expectTurn:()=>{waiting=true;},busy:()=>waiting||!!owner,current:()=>!!owner&&validOwner(owner)};
+  function invalidateEvidence() {
+    if(evidenceVisible) render('The workspace changed. Ask again for evidence from the current view.');
+  }
+  return {begin,owns,accept,finish,reset,invalidateEvidence,expectTurn:()=>{waiting=true;},busy:()=>waiting||!!owner,current:()=>!!owner&&validOwner(owner)};
 })();

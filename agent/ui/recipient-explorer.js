@@ -3,6 +3,7 @@
  */
 const RecipientExplorer = (() => {
   let selected = null;
+  let suspended = false;
   let returnFocus = null;
   let returnFocusRegion = null;
   let backdrop = null;
@@ -229,6 +230,14 @@ const RecipientExplorer = (() => {
     title.id = 'recipient-detail-title';
     container.appendChild(title);
     container.appendChild(textNode('p', `${row.city || 'Unknown city'} · ${row.zip_code || 'ZIP unknown'} · Profile ${row.recipient_id}`, 'recipient-note'));
+    const ask = textNode('button', 'Ask about this recipient', 'action-secondary');
+    ask.id = 'recipient-ask-assistant';
+    ask.type = 'button';
+    ask.setAttribute('aria-controls', 'assistant-drawer');
+    ask.setAttribute('aria-haspopup', 'dialog');
+    ask.setAttribute('aria-expanded', String(Boolean(document.body?.classList.contains('workspace-assistant-open'))));
+    ask.onclick = () => window.FoodWorkspace?.openAssistant?.(ask);
+    container.appendChild(ask);
     const badges = document.createElement('div');
     badges.className = 'recipient-badges';
     badges.appendChild(badge(sourceLabel(row)));
@@ -494,7 +503,7 @@ const RecipientExplorer = (() => {
   function updateModal() {
     const panel = $('recipient-detail');
     if (!panel) return;
-    const modal = Boolean(selected && mobile());
+    const modal = Boolean(selected && !suspended && mobile());
     panel.setAttribute('aria-modal', String(modal));
     document.body?.classList.toggle('recipient-sheet-open', modal);
     if (modal) {
@@ -538,38 +547,83 @@ const RecipientExplorer = (() => {
     returnFocus = opener || document.activeElement;
     returnFocusRegion = $('recipient-compare')?.contains?.(returnFocus) ? 'compare' : 'list';
     const panel = $('recipient-detail');
-    panel.classList.remove('hidden');
+    if (!suspended) panel.classList.remove('hidden');
     if (typeof ViewContext !== 'undefined') ViewContext.changed();
     refresh();
     const row = mergedRecipients().find(item => item.recipient_id === id);
     const point = cityPoint(row);
     if (map?.panTo && validPoint(point)) map.panTo([point.latitude, point.longitude], {animate: false});
-    $('recipient-close')?.focus?.({preventScroll: true});
+    if (!suspended) $('recipient-close')?.focus?.({preventScroll: true});
+  }
+  function suspend() {
+    if (!selected) return false;
+    // Only presentation changes: retain selection, source reads, and the evidence
+    // projection so the assistant can answer questions about this exact profile.
+    suspended = true;
+    $('recipient-detail')?.classList.add('hidden');
+    updateModal();
+    return true;
+  }
+  function resume(preferredFocus = null) {
+    if (!selected || !suspended) return false;
+    suspended = false;
+    const panel = $('recipient-detail');
+    panel?.classList.remove('hidden');
+    updateModal();
+    let target = preferredFocus;
+    if (!target?.isConnected || !panel?.contains?.(target) || target.disabled ||
+        !target.getClientRects?.().length) {
+      // Source refresh can replace the original Ask button while the panel is
+      // suspended. Restore its equivalent control rather than a detached node.
+      target = preferredFocus?.id === 'recipient-ask-assistant'
+        ? $('recipient-ask-assistant') : $('recipient-close');
+    }
+    (target || $('recipient-close'))?.focus?.({preventScroll: true});
+    return true;
   }
   function close() {
     const previousId = selected;
     stopEvidenceRead();
     selected = null;
+    suspended = false;
     if (typeof ViewContext !== 'undefined') ViewContext.changed();
     $('recipient-detail')?.classList.add('hidden');
     updateModal();
     renderList();
     styleMarkers();
-    let target = returnFocus;
-    // List rendering replaces its buttons; find the equivalent current control.
-    if (!target?.isConnected && previousId !== null) {
-      const controls = returnFocusRegion === 'compare'
-        ? [...($('recipient-compare')?.querySelectorAll?.('button[data-recipient-id]') || [])]
-        : [...($('recipient-list')?.children || [])];
-      target = controls.find(node =>
-        node.getAttribute?.('data-recipient-id') === previousId);
+    const canRestoreFocus = node => {
+      if (!node || node.isConnected === false || node.disabled || typeof node.focus !== 'function') return false;
+      if (node.closest?.('[hidden], [inert], .hidden')) return false;
+      // The lightweight interaction fixture has no closest(); explicit ancestry
+      // also covers inert properties that have not reflected to an attribute yet.
+      for (let parent = node; parent; parent = parent.parentElement) {
+        if (parent.hidden || parent.inert || parent.classList?.contains('hidden')) return false;
+      }
+      if (typeof node.getClientRects === 'function' && !node.getClientRects().length) return false;
+      const visibility = window.getComputedStyle?.(node)?.visibility;
+      return visibility !== 'hidden' && visibility !== 'collapse';
+    };
+    // A connected opener may live in a workspace view hidden since selection.
+    // Test visibility for both the original control and its replacement row.
+    const controls = returnFocusRegion === 'compare'
+      ? [...($('recipient-compare')?.querySelectorAll?.('button[data-recipient-id]') || [])]
+      : [...($('recipient-list')?.children || [])];
+    const replacement = previousId === null ? null : controls.find(node =>
+      node.getAttribute?.('data-recipient-id') === previousId);
+    const heading = $('workspace-view-title');
+    const candidates = [returnFocus, replacement, $('recipient-search'), heading,
+      ...(document.querySelectorAll?.('[data-workspace-view][aria-current="page"]') || [])];
+    for (const target of candidates) {
+      if (!canRestoreFocus(target)) continue;
+      if (target === heading) target.setAttribute?.('tabindex', '-1');
+      target.focus({preventScroll: true});
+      if (document.activeElement === target) break;
     }
-    (target || $('recipient-search'))?.focus?.({preventScroll: true});
     returnFocus = null;
     returnFocusRegion = null;
   }
   document.addEventListener?.('keydown', event => {
-    if (!selected) return;
+    if (!selected || suspended) return;
     const panel = $('recipient-detail');
     if (event.key === 'Escape' && (mobile() || panel.contains?.(document.activeElement))) {
       event.preventDefault(); close(); return;
@@ -586,6 +640,6 @@ const RecipientExplorer = (() => {
     }
   });
   window.addEventListener?.('resize', updateModal);
-  return {refresh, select, close, refreshEvidence, mergedRecipients, visibleRecipients, comparisonRows, scoreComponents,
+  return {refresh, select, close, suspend, resume, refreshEvidence, mergedRecipients, visibleRecipients, comparisonRows, scoreComponents,
     markerSelected: id => selected !== null && selected === String(id), markMarker, selectedId: () => selected};
 })();

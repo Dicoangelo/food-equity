@@ -51,6 +51,8 @@ assert.equal(JSON.stringify(context.buildRequest()),offerBefore);
 const previousSelection=explorer.selectedId();
 assert.equal(explorer.selectedId(),previousSelection,'Read receipts never navigate profiles');
 view.changed();
+assert.match(content(node('voice-action-receipt')),/workspace changed.*Ask again/,'Completed evidence is cleared as soon as its view changes');
+assert.doesNotMatch(content(node('voice-action-receipt')),/display excerpt was shortened/,'Prior-view evidence cannot remain visible');
 assert.equal(receipts.accept({...read,call_id:'stale-1'}),false);
 assert.match(content(node('voice-action-receipt')),/stale/);
 receipts.reset();
