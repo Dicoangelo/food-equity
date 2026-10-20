@@ -258,6 +258,7 @@ async def audit(postings, tracts, manifest, evaluated_at, *, toolset_factory=mak
                     candidates, required_storage=case["required_storage"],
                     pallet_count=case["pallet_count"], hours_remaining=hours,
                     evaluated_at=when, deadline_at=deadline,
+                    posting_text=posting["posting_text"],
                 )
                 result["winner"] = compact_candidate(ranking["winner"])
                 result["alternatives"] = [compact_candidate(c) for c in ranking["viable_runners_up"]]

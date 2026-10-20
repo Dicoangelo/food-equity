@@ -1,5 +1,6 @@
 """Behavior tests without cloud clients, credentials or model calls."""
 import importlib.util
+import json
 import math
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -174,6 +175,125 @@ class RankingTests(unittest.TestCase):
     def test_bad_vector_distance_cannot_produce_winner(self):
         for distance in (None, math.nan, math.inf, -1, 3):
             self.assertIsNone(self.rank([candidate(distance=distance)])["winner"])
+
+
+class AcceptanceTests(unittest.TestCase):
+    """Use literal supplied profile needs, including negation and conditional cases."""
+    @classmethod
+    def setUpClass(cls):
+        data = json.loads((Path(__file__).parents[1] / "data/profile_components.json").read_text())
+        cls.archetypes = data["archetypes"]
+
+    def check(self, profile, offer=None, storage="ambient"):
+        return module.SurplusMatcher().evaluate_constraints(
+            candidate(profile_text=profile), required_storage=storage,
+            posting_text=offer, evaluated_at=NOW,
+        )
+
+    def test_supplied_pork_refusal_blocks_even_semantically_close_offer(self):
+        profile = self.archetypes["halal_kosher"]["needs"][0]
+        result = self.check(profile, "1 pallet of chilled pork", "cold")
+        self.assertEqual(result["status"], "rejected")
+        self.assertIn("recipient_food_restriction", result["reason_codes"])
+        self.assertIn("cannot accept pork", result["acceptance_evidence"])
+
+    def test_explicit_uncertified_meat_refused_unknown_or_claimed_certification_pending(self):
+        profile = self.archetypes["halal_kosher"]["needs"][1]
+        for offer in ("uncertified beef", "not certified chicken"):
+            with self.subTest(offer=offer):
+                self.assertEqual(self.check(profile, offer, "cold")["status"], "rejected")
+        for offer in ("chilled chicken", "certified halal beef", "organic beef"):
+            with self.subTest(offer=offer):
+                result = self.check(profile, offer, "cold")
+                self.assertEqual(result["status"], "needs_confirmation")
+                self.assertIn("acceptance_confirmation_required", result["reason_codes"])
+
+    def test_plant_food_and_negated_pork_are_not_refused_as_meat(self):
+        profile = self.archetypes["halal_kosher"]["needs"][0]
+        for offer in ("fresh spinach", "bread with no pork", "pork-free bread", "vegan pork with tofu",
+                      "plant-based beef and lentils", "canned chickpeas", "shelf-stable graham crackers and bread"):
+            with self.subTest(offer=offer):
+                self.assertEqual(self.check(profile, offer)["status"], "eligible")
+        # A substitute in one item cannot hide actual pork in a different item.
+        self.assertEqual(self.check(profile, "vegan bread and pork")["status"], "rejected")
+
+    def test_supplied_infant_only_refuses_regular_food_not_diapers(self):
+        profile = self.archetypes["diaper_bank"]["needs"][1]
+        for offer in ("fresh spinach", "shelf-stable bread", "canned beans and diapers"):
+            with self.subTest(offer=offer):
+                self.assertEqual(self.check(profile, offer)["status"], "rejected")
+        self.assertEqual(self.check(profile, "sealed diapers and wipes")["status"], "eligible")
+        self.assertEqual(self.check(profile, "mixed donations")["status"], "needs_confirmation")
+
+    def test_no_food_profile_does_not_certify_formula_exception(self):
+        profile = self.archetypes["diaper_bank"]["needs"][7]
+        self.assertEqual(self.check(profile, "shelf-stable bread")["status"], "rejected")
+        self.assertEqual(self.check(profile, "sealed infant formula")["status"], "needs_confirmation")
+        self.assertEqual(self.check(profile, "diapers and wipes")["status"], "eligible")
+
+    def test_formula_packaging_rule_keeps_donor_claims_unverified(self):
+        profile = self.archetypes["diaper_bank"]["needs"][2]
+        for offer in ("opened infant formula", "expired formula", "unsealed formula"):
+            with self.subTest(offer=offer):
+                self.assertEqual(self.check(profile, offer)["status"], "rejected")
+        self.assertEqual(self.check(profile, "sealed in-date formula")["status"], "needs_confirmation")
+
+    def test_nonperishable_refusal_and_unknown_preservation(self):
+        profile = self.archetypes["disaster_staging"]["needs"][0]
+        self.assertEqual(self.check(profile, "fresh spinach", "cold")["status"], "rejected")
+        self.assertEqual(self.check(profile, "fresh spinach", "ambient")["status"], "rejected")
+        self.assertEqual(self.check(profile, "canned spinach", "ambient")["status"], "eligible")
+        self.assertEqual(self.check(profile, "canned beans and fresh spinach", "ambient")["status"], "rejected")
+        self.assertEqual(self.check(profile, "mixed load of canned beans and assorted items", "ambient")["status"], "needs_confirmation")
+
+    def test_preferences_and_demographics_are_not_prohibitions(self):
+        for profile in (self.archetypes["halal_kosher"]["needs"][7],
+                        "Community pantry serving families who keep halal.",
+                        "Fresh produce preferred, meat welcome.",
+                        "We accept uncertified meat."):
+            with self.subTest(profile=profile):
+                self.assertEqual(self.check(profile, "chicken", "cold")["status"], "eligible")
+
+    def test_ambiguous_conditional_or_unsupported_restrictions_need_review(self):
+        for profile in ("We cannot accept pork unless the coordinator approves it.",
+                        "We cannot accept food without a clear cold chain.",
+                        "We cannot accept sesame."):
+            with self.subTest(profile=profile):
+                self.assertEqual(self.check(profile, "pork", "cold")["status"], "needs_confirmation")
+
+    def test_recognized_refusal_prefix_cannot_hide_an_unsupported_remainder(self):
+        result = self.check("We cannot accept pork or nuts.", "bread with walnuts")
+        self.assertEqual(result["status"], "needs_confirmation")
+        self.assertNotIn("recipient_food_restriction", result["reason_codes"])
+        self.assertTrue(any("pork or nuts" in reason for reason in result["reasons"]))
+
+    def test_qualified_food_refusal_is_not_a_blanket_no_food_ban(self):
+        result = self.check("We cannot accept food containing nuts.", "plain rice")
+        self.assertEqual(result["status"], "needs_confirmation")
+        self.assertNotIn("recipient_food_restriction", result["reason_codes"])
+
+    def test_legacy_missing_offer_cannot_pass_a_restricted_profile(self):
+        profile = self.archetypes["halal_kosher"]["needs"][0]
+        self.assertEqual(self.check(profile)["status"], "needs_confirmation")
+        self.assertEqual(self.check("General community pantry.")["status"], "eligible")
+
+    def test_mixed_load_requires_certification_without_excluding_produce_alone(self):
+        profile = self.archetypes["halal_kosher"]["needs"][1]
+        self.assertEqual(self.check(profile, "spinach and chicken", "cold")["status"], "needs_confirmation")
+        self.assertEqual(self.check(profile, "spinach", "cold")["status"], "eligible")
+        self.assertEqual(self.check(profile, "mixed load of spinach and protein", "cold")["status"], "needs_confirmation")
+
+    def test_refused_candidate_cannot_win_or_be_an_alternative(self):
+        rows = [
+            candidate(recipient_id=1, distance=.01, profile_text=self.archetypes["halal_kosher"]["needs"][0]),
+            candidate(recipient_id=2, distance=.4, profile_text="General food bank."),
+        ]
+        result = module.SurplusMatcher().score_and_rank(
+            rows, posting_text="chilled pork", evaluated_at=NOW,
+        )
+        self.assertEqual(result["winner"]["recipient_id"], 2)
+        self.assertEqual(result["viable_runners_up"], [])
+        self.assertEqual(result["eliminated_decoys"][0]["recipient_id"], 1)
 
 
 if __name__ == "__main__":

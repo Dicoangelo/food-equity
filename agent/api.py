@@ -114,15 +114,15 @@ SAMPLE_SCENARIOS = [
     },
     {
         "id": "bakery",
-        "title": "🥖 Scenario 3: 2 Pallets Ambient Artisanal Bread",
-        "posting_text": "2 pallets of fresh sourdough and sliced sandwich bread, baked this morning, ambient dry storage",
+        "title": "🥖 Scenario 3: Audited Bakery Posting",
+        "posting_text": "roughly 200 loaves of day-old bread and pastries from three store locations",
         "required_storage": "ambient",
-        "pallet_count": 2.0,
+        "pallet_count": 1.0,
         "hours_remaining": 24.0,
         "donor_name": "Capitol Hill Bakery Hub",
         "donor_lat": 47.6180,
         "donor_lon": -122.3160,
-        "notes": "Tests ambient storage where refrigeration is NOT required, opening up smaller dry pantries."
+        "notes": "Original starter posting 3 · hypothetical 1-pallet capacity test, not a loaves-to-pallet conversion · ambient storage · 24-hour donor window. Results depend on the current clock and profile constraints."
     }
 ]
 
@@ -163,6 +163,7 @@ def foodkeeper_search(query: str = Query(..., min_length=2, max_length=120)):
         })
 
 
+@app.get("/api/health")
 @app.get("/healthz")
 def health():
     return {"status": "ok", "cloud_dependencies": "not_checked"}
@@ -185,6 +186,7 @@ async def match_surplus(req: MatchRequest):
             donor_name=req.donor_name,
             donor_lat=req.donor_lat,
             donor_lon=req.donor_lon,
+            deadline_at=req.deadline_at,
         )
     except Exception as exc:
         # Cloud errors can include sensitive identifiers; return a stable public error.
@@ -199,7 +201,7 @@ async def match_surplus(req: MatchRequest):
 @app.get("/", response_class=HTMLResponse)
 def index_dashboard():
     """Serves the full-featured interactive Map Dashboard for coordinators & team demos."""
-    html_content = """<!DOCTYPE html>
+    html_content = r"""<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
@@ -211,25 +213,71 @@ def index_dashboard():
   <script src="https://unpkg.com/leaflet.heat@0.2.0/dist/leaflet-heat.js"></script>
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
   <style>
-    #map { height: 520px; width: 100%; border-radius: 0.75rem; }
-    .pulse-pin { animation: pulse 2s infinite; }
-    pre, #brief-sms { overflow-wrap: anywhere; }
-    @media (max-width: 640px) {
-      #map { height: 360px; }
-      header { gap: 1rem; padding: 1rem; }
-      header h1 { flex-wrap: wrap; }
-      main { padding: 1rem; }
-      #brief-container { padding: 1rem; }
+    :root { --page:#0f172a; --panel:#1e293b; --inset:#111c30; --line:#475569; --text:#f1f5f9; --muted:#b4c1d2; --accent:#34d399; }
+    #rescue-app { font-size:14px; line-height:1.5; }
+    #rescue-app .text-xs { font-size:13px; line-height:1.5; }
+    #rescue-app .text-slate-400 { color:var(--muted); }
+    #rescue-app .text-slate-500 { color:#9aabc1; }
+    #rescue-app :where(button,input:not([type="checkbox"]):not([type="radio"]),select,textarea) { min-height:40px; font-size:14px; }
+    #rescue-app :where(button,a,input,select,textarea,summary):focus-visible { outline:3px solid #38bdf8; outline-offset:3px; }
+    #rescue-app button:disabled { opacity:.55; cursor:wait; }
+    #rescue-app .workflow-step:disabled { cursor:not-allowed; }
+    #rescue-app :where(input[type="checkbox"],input[type="radio"]) { width:18px; height:18px; accent-color:#10b981; }
+    #rescue-app summary { min-height:40px; padding:8px 0; }
+    #rescue-app main > div { min-width:0; }
+    #rescue-app pre, #brief-sms { overflow-wrap:anywhere; }
+    #map { height:460px; width:100%; border-radius:10px; }
+    .workflow { width:100%; max-width:1600px; margin:0 auto; padding:20px 24px 0; display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:12px; }
+    .workflow-step { text-align:left; padding:12px 16px; background:var(--panel); color:var(--muted); border:1px solid #334155; border-radius:10px; display:flex; align-items:center; gap:12px; }
+    .workflow-step[aria-current="step"] { color:var(--text); border-color:#34d399; background:#13342e; }
+    .step-number { width:28px; height:28px; border:1px solid currentColor; border-radius:50%; display:inline-flex; align-items:center; justify-content:center; flex-shrink:0; font-variant-numeric:tabular-nums; }
+    .workflow-step strong { display:block; font-weight:600; }
+    .workflow-step small { display:block; font-size:12px; }
+    .scenario-choice { min-width:0; text-align:left; display:flex; flex-direction:column; gap:5px; padding:12px; border:1px solid #475569; border-radius:8px; background:#111c30; transition:border-color .15s; }
+    .scenario-choice:hover { border-color:#94a3b8; }
+    .scenario-choice[aria-pressed="true"] { border-color:#34d399; background:#13342e; }
+    .scenario-choice span:last-child { color:var(--muted); font-size:13px; }
+    .result-state { border:1px solid #475569; border-left:4px solid #64748b; background:var(--panel); padding:20px; border-radius:10px; }
+    .result-state[data-state="success"] { border-left-color:#34d399; }
+    .result-state[data-state="loading"] { border-left-color:#38bdf8; }
+    .result-state[data-state="blocked"], .result-state[data-state="no-match"], .result-state[data-state="draft"] { border-left-color:#fbbf24; }
+    .result-actions { display:flex; flex-wrap:wrap; gap:10px; margin-top:14px; }
+    .result-actions.hidden { display:none; }
+    .action-secondary { padding:8px 14px; border:1px solid #64748b; border-radius:8px; background:#27364c; color:#f1f5f9; }
+    .action-secondary:hover { background:#334155; }
+    .status-copy { margin-top:10px; color:var(--muted); font-size:13px; }
+    #offer-panel, #review-panel, #handoff-panel { scroll-margin-top:24px; }
+    #offer-panel label { font-size:13px; }
+    #offer-panel h2, #scenario-panel h2 { font-size:16px; text-transform:none; letter-spacing:normal; color:var(--text); }
+    #input-text { min-height:104px; resize:vertical; }
+    #brief-container h3 { text-transform:none; font-size:14px; }
+    #brief-container .brief-badges { display:flex; flex-wrap:wrap; gap:8px; margin-top:8px; }
+    #handoff-panel { background:#111c30; }
+    #city-caveats { margin-top:8px; }
+    #city-caveats p + p { margin-top:8px; }
+    @media (max-width:640px) {
+      #rescue-app :where(button,input:not([type="checkbox"]):not([type="radio"]),select,textarea) { min-height:44px; font-size:16px; }
+      #rescue-app summary { min-height:44px; }
+      #rescue-app header { gap:16px; padding:16px; }
+      #rescue-app header h1 { flex-wrap:wrap; font-size:20px; }
+      #rescue-app header > div:last-child { flex-wrap:wrap; gap:8px; }
+      #rescue-app main { padding:16px; gap:16px; }
+      .workflow { padding:16px 16px 0; gap:8px; }
+      .workflow-step { padding:10px 8px; gap:6px; flex-direction:column; align-items:flex-start; }
+      .workflow-step strong { font-size:13px; }
+      .workflow-step small { display:none; }
+      .step-number { width:24px; height:24px; font-size:12px; }
+      #offer-fields { grid-template-columns:1fr 1fr; }
+      #offer-fields > div:first-child { grid-column:1 / -1; }
+      #brief-container { padding:16px; }
+      #map { height:360px; }
+      .result-actions > button { flex:1 1 auto; }
+      #map-controls { gap:12px; }
     }
-    @media (prefers-reduced-motion: reduce) { .pulse-pin { animation: none; } }
-    @keyframes pulse {
-      0% { transform: scale(0.95); opacity: 0.8; }
-      50% { transform: scale(1.15); opacity: 1; }
-      100% { transform: scale(0.95); opacity: 0.8; }
-    }
+    @media (prefers-reduced-motion:reduce) { * { scroll-behavior:auto !important; } }
   </style>
 </head>
-<body class="bg-slate-900 text-slate-100 min-h-screen flex flex-col font-sans">
+<body id="rescue-app" class="bg-slate-900 text-slate-100 min-h-screen flex flex-col font-sans">
 
   <!-- Header -->
   <header class="bg-slate-800 border-b border-slate-700 px-6 py-4 flex flex-wrap justify-between items-center shadow-lg">
@@ -257,6 +305,12 @@ def index_dashboard():
     </div>
   </header>
 
+  <nav class="workflow" aria-label="Rescue workflow">
+    <button id="step-offer" class="workflow-step" aria-current="step" onclick="focusSection('offer-panel')"><span class="step-number">1</span><span><strong>Enter offer</strong><small>Food, storage and pickup window</small></span></button>
+    <button id="step-review" class="workflow-step" onclick="focusSection('review-panel')"><span class="step-number">2</span><span><strong>Review match</strong><small>Reasons, clock and alternatives</small></span></button>
+    <button id="step-handoff" class="workflow-step" disabled onclick="focusSection('handoff-panel')"><span class="step-number">3</span><span><strong>Prepare handoff</strong><small>Review and copy an outreach draft</small></span></button>
+  </nav>
+
   <!-- Main Grid -->
   <main class="flex-1 p-6 grid grid-cols-1 lg:grid-cols-12 gap-6 max-w-[1600px] w-full mx-auto">
 
@@ -264,50 +318,51 @@ def index_dashboard():
     <div class="lg:col-span-4 flex flex-col gap-6">
 
       <!-- Scenario Selector -->
-      <div class="bg-slate-800 rounded-xl p-5 border border-slate-700 shadow-md">
+      <div id="scenario-panel" class="bg-slate-800 rounded-xl p-5 border border-slate-700 shadow-md">
         <h2 class="text-sm font-semibold uppercase tracking-wider text-slate-400 mb-3 flex items-center gap-2">
-          <i class="fa-solid fa-bolt text-amber-400"></i> Quick Test Scenarios
+          <i class="fa-solid fa-bolt text-amber-400"></i> Try a retail rescue scenario
         </h2>
+        <p class="text-xs text-slate-400 mb-3">Choose an offer to fill the form. Review its assumptions before running a live match.</p>
         <div class="flex flex-col gap-2" id="scenario-buttons">
           <!-- Loaded by JS -->
         </div>
       </div>
 
       <!-- Donor Input Form -->
-      <div class="bg-slate-800 rounded-xl p-5 border border-slate-700 shadow-md flex flex-col gap-4">
+      <div id="offer-panel" tabindex="-1" class="bg-slate-800 rounded-xl p-5 border border-slate-700 shadow-md flex flex-col gap-4">
         <h2 class="text-sm font-semibold uppercase tracking-wider text-slate-400 flex items-center gap-2">
-          <i class="fa-solid fa-pen-to-square text-sky-400"></i> Donor Surplus Posting
+          <i class="fa-solid fa-pen-to-square text-sky-400"></i> 1. Enter the surplus offer
         </h2>
 
         <div>
-          <label for="input-donor" class="block text-xs text-slate-400 mb-1">Donor Name / Origin</label>
-          <input id="input-donor" type="text" value="Pike Place Grocer Dock"
+          <label for="input-donor" class="block text-xs text-slate-400 mb-1">Donor / pickup origin</label>
+          <input id="input-donor" oninput="offerChanged()" type="text" value="Pike Place Grocer Dock"
                  class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-emerald-500" />
         </div>
 
         <div>
-          <label for="input-text" class="block text-xs text-slate-400 mb-1">Surplus Description (Query for Vector Search)</label>
-          <textarea id="input-text" rows="3"
+          <label for="input-text" class="block text-xs text-slate-400 mb-1">What is available?</label>
+          <textarea id="input-text" oninput="offerChanged()" rows="3"
                     class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-emerald-500">10 crates of spinach, harvested yesterday, needs cold storage</textarea>
         </div>
 
-        <div class="grid grid-cols-3 gap-3">
+        <div id="offer-fields" class="grid grid-cols-3 gap-3">
           <div>
             <label for="input-storage" class="block text-xs text-slate-400 mb-1">Required Storage</label>
-            <select id="input-storage" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-2 text-sm text-white focus:outline-none focus:border-emerald-500">
+            <select id="input-storage" oninput="offerChanged()" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-2 text-sm text-white focus:outline-none focus:border-emerald-500">
               <option value="cold" selected>Cold / Refrig</option>
               <option value="ambient">Ambient (Dry)</option>
               <option value="frozen">Frozen</option>
             </select>
           </div>
           <div>
-            <label for="input-pallets" class="block text-xs text-slate-400 mb-1">Volume (Pallets)</label>
-            <input id="input-pallets" type="number" min="0.01" max="10000" step="0.5" value="1.0"
+            <label for="input-pallets" class="block text-xs text-slate-400 mb-1">Quantity (pallets)</label>
+            <input id="input-pallets" oninput="offerChanged()" type="number" min="0.01" max="10000" step="0.5" value="1.0"
                    class="w-full bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-2 text-sm text-white focus:outline-none focus:border-emerald-500" />
           </div>
           <div>
-            <label for="input-hours" class="block text-xs text-slate-400 mb-1">Clock (Hours)</label>
-            <input id="input-hours" type="number" min="0.01" max="168" step="0.5" value="6.0"
+            <label for="input-hours" class="block text-xs text-slate-400 mb-1">Pickup window (hours)</label>
+            <input id="input-hours" oninput="offerChanged()" type="number" min="0.01" max="168" step="0.5" value="6.0"
                    class="w-full bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-2 text-sm text-white focus:outline-none focus:border-emerald-500" />
           </div>
         </div>
@@ -315,9 +370,9 @@ def index_dashboard():
         <p id="origin-note" class="text-xs text-slate-400">Origin: Pike Place demo coordinates. Pallet quantity is a scenario assumption, not a crates-to-pallet conversion.</p>
         <div id="match-status" role="status" aria-live="polite" class="text-sm text-slate-300"></div>
         <button id="btn-match" onclick="runMatching()"
-                class="mt-2 w-full bg-emerald-600 hover:bg-emerald-500 text-white font-semibold py-3 px-4 rounded-lg flex items-center justify-center gap-2 transition duration-150 shadow-lg shadow-emerald-900/30">
+                class="mt-2 w-full bg-emerald-700 hover:bg-emerald-800 text-white font-semibold py-3 px-4 rounded-lg flex items-center justify-center gap-2 transition duration-150 shadow-lg shadow-emerald-900/30">
           <i class="fa-solid fa-magnifying-glass-location"></i>
-          <span>Run Vector Search & Broker Match</span>
+          <span>Find a viable match</span>
         </button>
       </div>
 
@@ -338,10 +393,14 @@ def index_dashboard():
       <!-- Eliminated Decoys Defense -->
       <div class="bg-slate-800 rounded-xl p-5 border border-slate-700 shadow-md">
         <h2 class="text-sm font-semibold uppercase tracking-wider text-rose-400 mb-3 flex items-center gap-2">
-          <i class="fa-solid fa-shield-halved"></i> Filtered Decoys (Rejection Defense)
+          <i class="fa-solid fa-shield-halved"></i> Why candidates were ruled out
         </h2>
         <div id="decoys-list" class="flex flex-col gap-2 text-xs">
-          <p class="text-slate-500 italic">Run matching to see decoys eliminated by constraints.</p>
+          <p class="text-slate-500 italic">Run a match to see the specific constraints that ruled candidates out.</p>
+        </div>
+        <div id="pending-container" class="hidden border-t border-slate-700 pt-4 mt-4">
+          <h3 class="text-sm font-semibold text-amber-300 mb-2">Needs more information</h3>
+          <div id="pending-list" class="flex flex-col gap-2 text-xs"></div>
         </div>
       </div>
 
@@ -350,8 +409,100 @@ def index_dashboard():
     <!-- Right Map & Brief Panel -->
     <div class="lg:col-span-8 flex flex-col gap-6">
 
+      <section id="review-panel" tabindex="-1" class="result-state" data-state="idle" aria-live="polite" aria-busy="false">
+        <p class="text-xs text-slate-400 mb-1">2. Review the match</p>
+        <h2 id="result-title" class="text-xl font-semibold text-white">An offer comes first</h2>
+        <p id="result-description" class="text-sm text-slate-300 mt-2">Enter the surplus and pickup window. The broker will retrieve candidates and check storage, capacity and timing before proposing a recipient.</p>
+        <p id="result-counts" class="status-copy"></p>
+        <div id="result-actions" class="result-actions hidden">
+          <button id="action-review-offer" class="action-secondary" onclick="focusSection('offer-panel')">Review offer</button>
+          <button id="action-retry" class="action-secondary hidden" onclick="runMatching()">Retry live check</button>
+          <button id="action-handoff" class="action-secondary hidden" onclick="focusSection('handoff-panel')">Review outreach drafts</button>
+        </div>
+      </section>
+
+      <!-- Match Brief Artifact Card -->
+      <div id="brief-container" class="bg-slate-800 rounded-xl p-6 border border-slate-700 shadow-md flex flex-col gap-4 hidden">
+        <div class="flex flex-wrap justify-between items-start border-b border-slate-700 pb-4">
+          <div>
+            <span class="text-xs font-bold text-emerald-400 uppercase tracking-wider">Proposed Match Brief</span>
+            <h2 id="brief-winner-name" class="text-2xl font-bold text-white">Winner Name</h2>
+            <p id="brief-winner-address" class="text-xs text-slate-400">Address</p>
+          </div>
+          <div class="brief-badges">
+            <span id="brief-badge-storage" class="text-xs font-semibold px-3 py-1 rounded bg-slate-700 text-sky-300 border border-slate-600">Storage</span>
+            <span id="brief-badge-capacity" class="text-xs font-semibold px-3 py-1 rounded bg-slate-700 text-amber-300 border border-slate-600">Capacity</span>
+            <span id="brief-badge-equity" class="text-xs font-semibold px-3 py-1 rounded bg-purple-900/50 text-purple-300 border border-purple-700">Equity High</span>
+          </div>
+        </div>
+
+        <div>
+          <h3 class="text-xs font-semibold text-sky-400 uppercase mb-2">Available backup options</h3>
+          <div id="alternatives-list" class="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs text-slate-300"></div>
+        </div>
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <!-- Justification -->
+          <div class="bg-slate-900/60 p-4 rounded-lg border border-slate-700/60">
+            <h3 class="text-xs font-semibold text-emerald-400 uppercase mb-1">Why this recipient</h3>
+            <p id="brief-justification" class="text-xs text-slate-300 leading-relaxed"></p>
+          </div>
+          <!-- Verification & Clock -->
+          <div class="bg-slate-900/60 p-4 rounded-lg border border-slate-700/60">
+            <h3 class="text-xs font-semibold text-sky-400 uppercase mb-1">Profile Capability & Pickup Clock</h3>
+            <p id="brief-operational" class="text-xs text-slate-300 mb-2"></p>
+            <p id="brief-clock" class="text-xs text-amber-300 font-medium"></p>
+          </div>
+        </div>
+
+        <div class="bg-slate-900/60 p-4 rounded-lg border border-slate-700/60">
+          <h3 class="text-xs font-semibold text-purple-300 uppercase mb-1">Who this helps</h3>
+          <p id="brief-equity" class="text-xs text-slate-300 leading-relaxed"></p>
+          <p class="text-xs text-slate-400 mt-2">Neighborhood evidence is approximate: ACS tract indicators describe the area near the recipient's ZIP-centroid location, not individual need or the recipient's actual service catchment. Confirm whom the recipient serves.</p>
+        </div>
+
+        <!-- Outreach Drafts -->
+        <div id="handoff-panel" tabindex="-1" class="bg-slate-900/80 p-4 rounded-lg border border-slate-700 flex flex-col gap-3">
+          <div class="flex flex-wrap gap-3 justify-between items-center">
+            <h3 class="text-xs font-semibold text-slate-300 uppercase flex items-center gap-2">
+              <i class="fa-solid fa-paper-plane text-emerald-400"></i> 3. Prepare the handoff
+            </h3>
+            <button onclick="copyMatchBrief()" class="action-secondary">Copy match brief</button>
+            <button onclick="copyOutreach()" class="text-xs bg-slate-700 hover:bg-slate-600 px-3 py-1 rounded text-white transition flex items-center gap-1">
+              <i class="fa-solid fa-copy"></i> Copy SMS
+            </button>
+          </div>
+          <p class="text-xs text-slate-400">Confirm recipient acceptance, current storage/capacity and pickup ETA. Check the actual address before dispatch. These drafts are ready for your review; nothing has been sent or reserved.</p>
+          <p id="handoff-feedback" role="status" aria-live="polite" class="text-xs text-emerald-300"></p>
+          <div>
+            <span class="text-xs text-slate-400 uppercase font-semibold">Coordinator SMS draft (may use multiple segments):</span>
+            <div id="brief-sms" class="bg-slate-950 p-2.5 rounded border border-slate-800 text-xs text-emerald-300 font-mono mt-1"></div>
+          </div>
+          <div>
+            <div class="flex flex-wrap justify-between items-center gap-2"><span class="text-xs text-slate-400 font-semibold">Email outreach draft</span><button onclick="copyEmail()" class="action-secondary">Copy email</button></div>
+            <pre id="brief-email" class="bg-slate-950 p-3 rounded border border-slate-800 text-xs text-slate-300 font-sans whitespace-pre-wrap mt-1"></pre>
+          </div>
+        </div>
+
+        <p id="brief-provenance" class="text-xs text-amber-300"></p>
+        <!-- Team Handoff JSON -->
+        <div class="border-t border-slate-700 pt-3">
+          <details class="cursor-pointer">
+            <summary class="text-xs text-slate-400 hover:text-slate-200 font-medium flex items-center gap-1">
+              <i class="fa-solid fa-code text-sky-400"></i> Inspect Full JSON Payload (Team API Handoff)
+            </summary>
+            <div class="mt-2 relative">
+              <button onclick="copyJsonPayload()" class="absolute top-2 right-2 text-xs bg-slate-800 hover:bg-slate-700 border border-slate-600 px-2 py-1 rounded text-slate-200">
+                Copy JSON
+              </button>
+              <pre id="raw-json" class="bg-slate-950 p-3 rounded text-xs text-sky-300 font-mono overflow-x-auto max-h-60"></pre>
+            </div>
+          </details>
+        </div>
+
+      </div>
+
       <!-- Map Card -->
-      <div class="bg-slate-800 rounded-xl p-4 border border-slate-700 shadow-md flex flex-col gap-3">
+      <div id="map-panel" class="bg-slate-800 rounded-xl p-4 border border-slate-700 shadow-md flex flex-col gap-3">
         <div class="flex flex-wrap gap-3 justify-between items-center px-1">
           <div class="flex items-center gap-2 text-sm font-semibold text-slate-200">
             <i class="fa-solid fa-map-location-dot text-emerald-400"></i>
@@ -364,7 +515,7 @@ def index_dashboard():
             <span class="flex items-center gap-1"><span class="w-3 h-3 rounded-full bg-rose-500 inline-block"></span> Eliminated Decoy</span>
           </div>
         </div>
-        <div class="flex flex-wrap gap-3 items-center text-xs bg-slate-900/60 p-3 rounded-lg">
+        <div id="map-controls" class="flex flex-wrap gap-3 items-center text-xs bg-slate-900/60 p-3 rounded-lg">
           <button id="btn-city" onclick="loadCityData()" class="bg-sky-700 hover:bg-sky-600 px-3 py-2 rounded text-white">Load city data</button>
           <label class="flex items-center gap-1"><input id="show-need" type="checkbox" checked onchange="renderCityLayers()"> Census need heatmap</label>
           <label class="flex items-center gap-1"><input id="show-recipients" type="checkbox" checked onchange="renderCityLayers()"> Recipient capabilities</label>
@@ -384,7 +535,7 @@ def index_dashboard():
         </div>
         <p class="text-xs text-slate-400">Capability points: purple = freezer · blue = refrigeration · gray = other/unknown. These are dataset profiles, not live availability.</p>
         <p id="city-provenance" class="text-xs text-slate-400">Sources have not been loaded.</p>
-        <details class="text-xs text-slate-400"><summary class="cursor-pointer">City data source details</summary><pre id="city-source-details" class="whitespace-pre-wrap break-words mt-2"></pre></details>
+        <details class="text-xs text-slate-400"><summary class="cursor-pointer">Sources and limits of this map</summary><div id="city-caveats"></div><pre id="city-source-details" class="whitespace-pre-wrap break-words mt-2"></pre></details>
         <p id="route-status" class="text-xs text-amber-300">Routing unavailable — no verified road route has been returned. Any dashed line is an illustrative straight-line connection.</p>
         <a id="external-directions" class="hidden text-sm text-sky-300 underline" target="_blank" rel="noopener noreferrer">Open directions in Google Maps (approximate endpoints; verify the address)</a>
         <p class="text-xs text-slate-400">Recipient points may represent ZIP-level locations. Confirm actual collection address, acceptance, storage and pickup with the recipient. Census indicators describe neighborhoods, not individual eligibility.</p>
@@ -397,82 +548,6 @@ def index_dashboard():
         <pre id="execution-trace" class="whitespace-pre-wrap break-words text-xs text-slate-400 mt-2"></pre>
       </details>
 
-      <!-- Match Brief Artifact Card -->
-      <div id="brief-container" class="bg-slate-800 rounded-xl p-6 border border-slate-700 shadow-md flex flex-col gap-4 hidden">
-        <div class="flex flex-wrap justify-between items-start border-b border-slate-700 pb-4">
-          <div>
-            <span class="text-xs font-bold text-emerald-400 uppercase tracking-wider">Proposed Match Brief</span>
-            <h2 id="brief-winner-name" class="text-2xl font-bold text-white">Winner Name</h2>
-            <p id="brief-winner-address" class="text-xs text-slate-400">Address</p>
-          </div>
-          <div class="flex gap-2">
-            <span id="brief-badge-storage" class="text-xs font-semibold px-3 py-1 rounded bg-slate-700 text-sky-300 border border-slate-600">Storage</span>
-            <span id="brief-badge-capacity" class="text-xs font-semibold px-3 py-1 rounded bg-slate-700 text-amber-300 border border-slate-600">Capacity</span>
-            <span id="brief-badge-equity" class="text-xs font-semibold px-3 py-1 rounded bg-purple-900/50 text-purple-300 border border-purple-700">Equity High</span>
-          </div>
-        </div>
-
-        <div>
-          <h3 class="text-xs font-semibold text-sky-400 uppercase mb-2">Next two options</h3>
-          <div id="alternatives-list" class="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs text-slate-300"></div>
-        </div>
-        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <!-- Justification -->
-          <div class="bg-slate-900/60 p-4 rounded-lg border border-slate-700/60">
-            <h3 class="text-xs font-semibold text-emerald-400 uppercase mb-1">Why Them (Justification)</h3>
-            <p id="brief-justification" class="text-xs text-slate-300 leading-relaxed"></p>
-          </div>
-          <!-- Verification & Clock -->
-          <div class="bg-slate-900/60 p-4 rounded-lg border border-slate-700/60">
-            <h3 class="text-xs font-semibold text-sky-400 uppercase mb-1">Profile Capability & Pickup Clock</h3>
-            <p id="brief-operational" class="text-xs text-slate-300 mb-2"></p>
-            <p id="brief-clock" class="text-xs text-amber-300 font-medium"></p>
-          </div>
-        </div>
-
-        <div class="bg-slate-900/60 p-4 rounded-lg border border-slate-700/60">
-          <h3 class="text-xs font-semibold text-purple-300 uppercase mb-1">Who this helps</h3>
-          <p id="brief-equity" class="text-xs text-slate-300 leading-relaxed"></p>
-          <p class="text-[11px] text-slate-400 mt-2">Neighborhood evidence is approximate: ACS tract indicators describe the area near the recipient's ZIP-centroid location, not individual need or the recipient's actual service catchment. Confirm whom the recipient serves.</p>
-        </div>
-
-        <!-- Outreach Drafts -->
-        <div class="bg-slate-900/80 p-4 rounded-lg border border-slate-700 flex flex-col gap-3">
-          <div class="flex justify-between items-center">
-            <h3 class="text-xs font-semibold text-slate-300 uppercase flex items-center gap-2">
-              <i class="fa-solid fa-paper-plane text-emerald-400"></i> Drafted Outreach Messages
-            </h3>
-            <button onclick="copyOutreach()" class="text-xs bg-slate-700 hover:bg-slate-600 px-3 py-1 rounded text-white transition flex items-center gap-1">
-              <i class="fa-solid fa-copy"></i> Copy SMS
-            </button>
-          </div>
-          <div>
-            <span class="text-[11px] text-slate-400 uppercase font-semibold">Coordinator SMS draft (may use multiple segments):</span>
-            <div id="brief-sms" class="bg-slate-950 p-2.5 rounded border border-slate-800 text-xs text-emerald-300 font-mono mt-1"></div>
-          </div>
-          <div>
-            <span class="text-[11px] text-slate-400 uppercase font-semibold">Email Outreach Draft:</span>
-            <pre id="brief-email" class="bg-slate-950 p-3 rounded border border-slate-800 text-xs text-slate-300 font-sans whitespace-pre-wrap mt-1"></pre>
-          </div>
-        </div>
-
-        <p id="brief-provenance" class="text-xs text-amber-300"></p>
-        <!-- Team Handoff JSON -->
-        <div class="border-t border-slate-700 pt-3">
-          <details class="cursor-pointer">
-            <summary class="text-xs text-slate-400 hover:text-slate-200 font-medium flex items-center gap-1">
-              <i class="fa-solid fa-code text-sky-400"></i> Inspect Full JSON Payload (Team API Handoff)
-            </summary>
-            <div class="mt-2 relative">
-              <button onclick="copyJsonPayload()" class="absolute top-2 right-2 text-xs bg-slate-800 hover:bg-slate-700 border border-slate-600 px-2 py-1 rounded text-slate-200">
-                Copy JSON
-              </button>
-              <pre id="raw-json" class="bg-slate-950 p-3 rounded text-[11px] text-sky-300 font-mono overflow-x-auto max-h-60"></pre>
-            </div>
-          </details>
-        </div>
-
-      </div>
 
     </div>
 
@@ -490,6 +565,9 @@ def index_dashboard():
     let selectedOrigin = {latitude: 47.6097, longitude: -122.3422};
     let currentOfferKey = null;
     let pickupDeadline = null;
+    let matchInFlight = false;
+    let scenarioButtons = [];
+    const offerFieldIds = ['input-donor','input-text','input-storage','input-pallets','input-hours'];
 
     function textNode(tag, text, className = '') {
       const node = document.createElement(tag);
@@ -507,6 +585,55 @@ def index_dashboard():
       const el = document.getElementById('match-status');
       el.textContent = message;
       el.className = warning ? 'text-sm text-amber-300' : 'text-sm text-slate-300';
+    }
+    function focusSection(id) {
+      const target = document.getElementById(id);
+      if (typeof target.scrollIntoView === 'function') target.scrollIntoView({block:'start',behavior:'auto'});
+      if (typeof target.focus === 'function') target.focus({preventScroll:true});
+    }
+    function setWorkflow(step) {
+      ['offer','review','handoff'].forEach(name => {
+        const button = document.getElementById(`step-${name}`);
+        if (name === step) button.setAttribute('aria-current','step');
+        else button.removeAttribute('aria-current');
+      });
+    }
+    function lockOffer(locked) {
+      offerFieldIds.forEach(id => { document.getElementById(id).disabled = locked; });
+      scenarioButtons.forEach(button => { button.disabled = locked; });
+      document.getElementById('btn-match').disabled = locked;
+    }
+    function reviewState(state, title, description, counts = '') {
+      const panel = document.getElementById('review-panel');
+      panel.setAttribute('data-state',state);
+      panel.setAttribute('aria-busy',state === 'loading' ? 'true' : 'false');
+      document.getElementById('result-title').textContent = title;
+      document.getElementById('result-description').textContent = description;
+      document.getElementById('result-counts').textContent = counts;
+      const active = !['idle','loading'].includes(state);
+      document.getElementById('result-actions').classList.toggle('hidden',!active);
+      document.getElementById('action-retry').classList.toggle('hidden',state !== 'blocked');
+      const hasMatch = ['success','draft'].includes(state);
+      document.getElementById('action-handoff').classList.toggle('hidden',!hasMatch);
+      document.getElementById('step-handoff').disabled = !hasMatch;
+    }
+    function offerChanged() {
+      if (matchInFlight) return;
+      currentPayload = null;
+      document.getElementById('brief-container').classList.add('hidden');
+      document.getElementById('run-evidence').classList.add('hidden');
+      document.getElementById('external-directions').classList.add('hidden');
+      document.getElementById('external-directions').removeAttribute('href');
+      document.getElementById('route-status').textContent = 'Routing unavailable — run the current offer to get a proposed destination.';
+      document.getElementById('pending-container').classList.add('hidden');
+      document.getElementById('runtime-status').textContent = 'Offer changed';
+      document.getElementById('handoff-feedback').textContent = '';
+      document.getElementById('decoys-list').replaceChildren(textNode('p','Run the updated offer to refresh its candidate checks.'));
+      scenarioButtons.forEach(button => button.setAttribute('aria-pressed','false'));
+      if (markersLayer) markersLayer.clearLayers();
+      reviewState('idle','Ready to check this offer','Review the quantity, storage and actual pickup window, then run a live match.');
+      setWorkflow('offer');
+      setStatus('Ready to check the current offer.');
     }
     function validPoint(point) {
       return point && Number.isFinite(point.latitude) && Number.isFinite(point.longitude)
@@ -586,7 +713,10 @@ def index_dashboard():
         cityPayload = data;
         renderCityLayers();
         document.getElementById('city-provenance').textContent = `Seattle aggregate data · retrieved ${data.as_of || 'time not supplied'}. Operational profiles require recipient confirmation; point locations are approximate.`;
-        document.getElementById('city-source-details').textContent = JSON.stringify({provenance:data.provenance,limits:data.limits,warnings:data.warnings},null,2);
+        document.getElementById('city-source-details').textContent = JSON.stringify({provenance:data.provenance,limits:data.limits},null,2);
+        const caveats = document.getElementById('city-caveats');
+        caveats.replaceChildren();
+        (data.warnings || []).forEach(warning => caveats.appendChild(textNode('p',warning)));
       } catch (error) {
         cityPayload = null;
         if (cityRecipientLayer) cityRecipientLayer.clearLayers();
@@ -606,7 +736,8 @@ def index_dashboard():
       const visibleRecipients = recipients.filter(r => capabilityVisible(r, filter));
       const metricLabel = metric === 'need_score' ? 'Combined need = mean of poverty and no-vehicle rates' : metric === 'poverty_rate' ? 'Poverty rate' : 'No-vehicle household rate';
       document.getElementById('heat-legend-label').textContent = `Low → high ${metricLabel} (0–1). Smoothed tract-centroid need proxy; density affects intensity. Not tract boundaries, household food insecurity or individual eligibility.`;
-      document.getElementById('city-status').textContent = `${points.length} census points with ${metricLabel.toLowerCase()} · ${visibleRecipients.length} recipient profiles in the selected capability view. ${(cityPayload.warnings || []).join(' ')}`;
+      document.getElementById('city-status').textContent = `${points.length} census points · ${visibleRecipients.length} recipient profiles in this view. Source caveats are listed below.`;
+      document.getElementById('city-status').className = 'text-xs text-slate-300';
       if (!map || !cityRecipientLayer || !tractPointLayer) return;
       cityRecipientLayer.clearLayers();
       tractPointLayer.clearLayers();
@@ -709,6 +840,8 @@ def index_dashboard():
       });
     }
     function applyScenario(sc) {
+      if (matchInFlight) return;
+      offerChanged();
       document.getElementById('input-donor').value = sc.donor_name;
       document.getElementById('input-text').value = sc.posting_text;
       document.getElementById('input-storage').value = sc.required_storage;
@@ -718,6 +851,18 @@ def index_dashboard():
       currentOfferKey = null;
       pickupDeadline = null;
       document.getElementById('origin-note').textContent = `Origin: ${sc.donor_name} demo coordinates. Pallet quantity is a scenario assumption; confirm the actual volume.`;
+      setStatus(sc.notes || 'Scenario loaded. Review the offer, then run a live match.');
+    }
+    function retailPresets(scenarios) {
+      const bakery = scenarios.find(sc => sc.id === 'bakery');
+      const chilled = scenarios.find(sc => sc.id === 'dairy') || scenarios.find(sc => sc.id === 'spinach');
+      const presets = [];
+      if (bakery) presets.push({...bakery, title:'Bakery surplus'});
+      if (chilled) presets.push({...chilled, title:'Urgent chilled offer', notes:`Refrigeration required · ${chilled.pallet_count} pallets · ${chilled.hours_remaining} hours. Review which physical constraints block a match.`});
+      if (bakery) presets.push({...bakery, id:'capacity-pressure', title:'Full-lot capacity stress test', pallet_count:50,
+        posting_text:'50 pallets of boxed bread and baked goods, ambient dry storage; the recipient must accept the full lot',
+        notes:'Demo stress case · 50 pallets, no assumed split. Check capacity rejections; only change a real offer when the donor confirms it.'});
+      return presets.length ? presets : scenarios;
     }
     async function loadScenarios() {
       try {
@@ -726,12 +871,16 @@ def index_dashboard():
         const scenarios = await res.json();
         const container = document.getElementById('scenario-buttons');
         container.replaceChildren();
-        scenarios.forEach(sc => {
+        scenarioButtons = [];
+        retailPresets(scenarios).forEach(sc => {
           const btn = document.createElement('button');
-          btn.className = 'text-left bg-slate-900/80 hover:bg-slate-700 p-2.5 rounded-lg border border-slate-700 transition flex flex-col';
+          btn.className = 'scenario-choice';
+          btn.setAttribute('aria-pressed','false');
+          btn.disabled = matchInFlight;
           btn.appendChild(textNode('span', sc.title, 'font-semibold text-xs text-slate-200'));
-          btn.appendChild(textNode('span', sc.posting_text, 'text-[11px] text-slate-400 truncate'));
-          btn.onclick = () => { applyScenario(sc); runMatching(); };
+          btn.appendChild(textNode('span', sc.notes || sc.posting_text));
+          btn.onclick = () => { if (matchInFlight) return; applyScenario(sc); btn.setAttribute('aria-pressed','true'); };
+          scenarioButtons.push(btn);
           container.appendChild(btn);
         });
       } catch (err) { setStatus(err.message, true); }
@@ -758,17 +907,26 @@ def index_dashboard():
       return req;
     }
     async function runMatching() {
+      if (matchInFlight) return;
+      matchInFlight = true;
+      lockOffer(true);
       const btn = document.getElementById('btn-match');
       btn.disabled = true;
       btn.textContent = 'Running live retrieval and constraint checks…';
       document.getElementById('brief-container').classList.add('hidden');
       document.getElementById('run-evidence').classList.add('hidden');
+      document.getElementById('pending-container').classList.add('hidden');
+      document.getElementById('pending-list').replaceChildren();
+      document.getElementById('decoys-list').replaceChildren(textNode('p','Candidate checks are in progress for this offer.'));
       currentPayload = null;
       if (markersLayer) markersLayer.clearLayers();
-      setStatus('Contacting the live broker…');
+      setStatus('Checking semantic candidates, storage, capacity and the same pickup deadline…');
+      reviewState('loading','Checking this offer','The live broker is retrieving candidates and checking feasibility. The offer is locked until this request finishes.');
+      setWorkflow('review');
       document.getElementById('runtime-status').textContent = 'Running';
       document.getElementById('route-status').textContent = 'Routing pending — no current route has been verified.';
       document.getElementById('external-directions').classList.add('hidden');
+      document.getElementById('external-directions').removeAttribute('href');
       try {
         const reqBody = buildRequest();
         const res = await fetch('/api/match', {
@@ -781,13 +939,17 @@ def index_dashboard():
         }
         currentPayload = data;
         renderResults(data);
+        focusSection('review-panel');
       } catch (err) {
         setStatus(err.message || 'The request could not complete. Please retry.', true);
         document.getElementById('runtime-status').textContent = 'Failed';
+        reviewState('blocked','The live check did not finish',err.message || 'Check the offer and retry. A failed request is not a confirmed match.');
+        setWorkflow('review');
         document.getElementById('decoys-list').replaceChildren(textNode('p', 'No current result. Previous results have been cleared.'));
       } finally {
-        btn.disabled = false;
-        btn.textContent = 'Run Vector Search & Broker Match';
+        matchInFlight = false;
+        lockOffer(false);
+        btn.textContent = 'Find a viable match';
       }
     }
     function addMarker(point, color, symbol, title, lines) {
@@ -809,9 +971,23 @@ def index_dashboard():
       });
     }
     function renderResults(data) {
+      currentPayload = data;
+      document.getElementById('handoff-feedback').textContent = '';
       if (markersLayer) markersLayer.clearLayers();
       const decoys = data.eliminated_decoys || [];
       renderDecoys(decoys);
+      const pending = data.pending_confirmation || [];
+      const pendingList = document.getElementById('pending-list');
+      pendingList.replaceChildren();
+      document.getElementById('pending-container').classList.toggle('hidden',!pending.length);
+      pending.forEach(candidate => {
+        const row = document.createElement('div');
+        row.className = 'p-3 rounded bg-slate-900/60 border border-amber-900/40';
+        row.appendChild(textNode('strong',candidate.name,'block text-amber-200'));
+        const reasons = [...new Set([...(candidate.elimination_reasons || []),...(candidate.confirmations_required || [])])];
+        row.appendChild(textNode('p',reasons.join(' ') || 'Confirm the missing recipient details before treating this as a viable match.','text-slate-300'));
+        pendingList.appendChild(row);
+      });
       const trace = data.execution_trace || [];
       document.getElementById('run-evidence').classList.remove('hidden');
       document.getElementById('execution-trace').textContent = trace.length ? JSON.stringify(trace, null, 2) : 'No execution trace returned.';
@@ -820,7 +996,14 @@ def index_dashboard():
         document.getElementById('brief-container').classList.add('hidden');
         document.getElementById('runtime-status').textContent = data.status === 'blocked' ? 'Blocked' : 'No match';
         document.getElementById('route-status').textContent = 'Routing unavailable — no current eligible match.';
+        document.getElementById('external-directions').classList.add('hidden');
+        document.getElementById('external-directions').removeAttribute('href');
         setStatus(data.message || 'No actionable candidate passed the checks. Review the rejected candidates and offer constraints.', true);
+        const blocked = data.status === 'blocked';
+        reviewState(blocked ? 'blocked' : 'no-match', blocked ? 'Live broker unavailable' : 'No current recipient passed the checks',
+          blocked ? (data.message || 'Retry the live check after the service is available.') : 'Review the ruled-out candidates and missing details. Confirm new facts with the donor or recipient before changing the offer; do not extend a deadline to force a match.',
+          `${decoys.length} rejected · ${pending.length} awaiting details`);
+        setWorkflow('review');
         return;
       }
       const donor = data.donor || {};
@@ -837,10 +1020,14 @@ def index_dashboard():
         row.appendChild(textNode('p', `Pickup window: ${readable(candidate.pickup_window_hours, 'h')} · Recipient confirmation required.`));
         alternativeList.appendChild(row);
       });
-      if (alternatives.length < 2) alternativeList.appendChild(textNode('p', `Only ${alternatives.length} alternative(s) passed the available checks; do not invent a backup.`));
+      if (alternatives.length < 2) alternativeList.appendChild(textNode('p', alternatives.length ? 'One backup passed the available checks. A second option is not available.' : 'No backup passed the available checks. Confirm the top candidate before planning a collection.'));
       const fallback = data.generation_mode === 'deterministic_fallback' || data.status === 'draft';
       document.getElementById('runtime-status').textContent = fallback ? 'Fallback draft' : 'Completed';
       setStatus(fallback ? (data.message || 'Live retrieval completed, but Gemini did not produce a brief. Showing a deterministic draft for review.') : 'Proposed match ready. Confirm recipient acceptance and pickup before dispatch.', true);
+      reviewState(fallback ? 'draft' : 'success',fallback ? 'A fallback draft is ready for review' : 'A proposed match is ready',
+        fallback ? (data.message || 'Review the deterministic draft and source evidence before contacting the recipient.') : 'Review the recipient, clock margin and backup options, then prepare your outreach. Acceptance is still unconfirmed.',
+        `1 proposed · ${alternatives.length} backup${alternatives.length === 1 ? '' : 's'} · ${decoys.length} rejected · ${pending.length} awaiting details`);
+      setWorkflow('review');
       addMarker(donor, '#f59e0b', '●', `Donor: ${readable(donor.name)}`, [donor.posting_text || '']);
       addMarker(winner, '#10b981', '★', `Top candidate: ${readable(winner.name)}`, [
         `${readable(winner.street)}, ${readable(winner.city)}`,
@@ -886,10 +1073,35 @@ def index_dashboard():
       map.fitBounds(points.length ? points : [[47.20,-122.55],[47.86,-121.98]],
         {padding:[24,24],maxZoom:points.length ? 13 : 11,animate:false});
     }
-    async function copyOutreach() {
-      try { await navigator.clipboard.writeText(document.getElementById('brief-sms').textContent); setStatus('Draft SMS copied. It has not been sent.'); }
-      catch (_) { setStatus('Clipboard unavailable. Select and copy the draft manually.', true); }
+    function handoffText(data) {
+      if (!data || !data.winner) return '';
+      const brief = data.match_brief || {};
+      const winner = data.winner;
+      return [
+        'PROPOSED MATCH — recipient confirmation required',
+        `Recipient: ${readable(winner.name)}`,
+        `Address: ${readable(winner.street)}, ${readable(winner.city)}, WA ${readable(winner.zip_code)}`,
+        brief.match_justification || '', brief.operational_verification || '',
+        brief.clock_action_plan || '', brief.equity_rationale || '',
+        `Available backups: ${(data.runners_up || []).map(row => row.name).join('; ') || 'None returned'}`,
+        `Generation mode: ${readable(data.generation_mode)}.`,
+        '', 'SMS draft:', brief.drafted_sms_outreach || '', '', 'Email draft:', brief.drafted_email_outreach || '',
+        '', data.provenance_warning || 'Dataset profiles require recipient confirmation. Nothing has been sent or reserved.'
+      ].join('\n');
     }
+    async function copyHandoff(text, label) {
+      if (!currentPayload || !currentPayload.winner || !text) return;
+      try {
+        await navigator.clipboard.writeText(text);
+        document.getElementById('handoff-feedback').textContent = `${label} copied. Review it before sending; no outreach was sent by this app.`;
+        setWorkflow('handoff');
+      } catch (_) {
+        document.getElementById('handoff-feedback').textContent = 'Clipboard unavailable. Select and copy the draft manually.';
+      }
+    }
+    async function copyOutreach() { await copyHandoff(document.getElementById('brief-sms').textContent,'SMS draft'); }
+    async function copyEmail() { await copyHandoff(document.getElementById('brief-email').textContent,'Email draft'); }
+    async function copyMatchBrief() { await copyHandoff(handoffText(currentPayload),'Match brief'); }
     async function copyJsonPayload() {
       if (!currentPayload) return;
       try { await navigator.clipboard.writeText(JSON.stringify(currentPayload, null, 2)); setStatus('Result JSON copied.'); }
@@ -900,6 +1112,7 @@ def index_dashboard():
       loadScenarios();
       loadCityData();
       setStatus('Choose a scenario or enter an offer, then run a live match.');
+      setWorkflow('offer');
     };
   </script>
 

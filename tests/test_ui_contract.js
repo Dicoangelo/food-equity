@@ -5,12 +5,22 @@ const vm = require('node:vm');
 const source = fs.readFileSync(require('node:path').join(__dirname, '../agent/api.py'), 'utf8');
 const script = source.split('  <!-- Leaflet & App JS -->')[1].split('<script>')[1].split('</script>')[0];
 class Element {
-  constructor(tag) { this.tagName=tag; this.children=[]; this.value=''; this.textContent=''; this.className=''; this.classList={add(){},remove(){}}; }
+  constructor(tag) {
+    this.tagName=tag; this.children=[]; this.value=''; this.textContent=''; this.className='';
+    this.classes=new Set(); this.attributes={};
+    this.classList={
+      add:(name)=>this.classes.add(name), remove:(name)=>this.classes.delete(name),
+      toggle:(name,force)=>{ const enabled=force ?? !this.classes.has(name); if(enabled)this.classes.add(name);else this.classes.delete(name);return enabled; },
+      contains:(name)=>this.classes.has(name),
+    };
+  }
   appendChild(child) { this.children.push(child); return child; }
   replaceChildren(...children) { this.children=children; }
   set innerHTML(_) { throw new Error('Dynamic innerHTML is forbidden'); }
   get innerText() { return this.textContent; }
-  removeAttribute(name) { delete this[name]; }
+  setAttribute(name,value) { this.attributes[name]=String(value); }
+  getAttribute(name) { return this.attributes[name]; }
+  removeAttribute(name) { delete this[name]; delete this.attributes[name]; }
 }
 const nodes = new Map();
 const context = vm.createContext({
@@ -81,7 +91,7 @@ const fakeMap = {setView(){return this;},fitBounds(points,options){fitOptions={p
 context.L = {
   map:()=>fakeMap,
   tileLayer:(url,options)=>{tileUrl=url;tileOptions=options;return {on(name,fn){tileEvents[name]=fn;return this;},addTo(){return this;}};},
-  layerGroup:()=>({addTo(){return this;}}),
+  layerGroup:()=>({addTo(){return this;},clearLayers(){}}),
 };
 context.initMap();
 assert.equal(tileUrl,'https://tile.openstreetmap.org/{z}/{x}/{y}.png');
@@ -107,3 +117,102 @@ context.renderFoodKeeper({status:'no_match',products:[]});
 assert.match(nodes.get('foodkeeper-status').textContent,/no shelf life has been assumed/);
 assert.equal(nodes.get('foodkeeper-results').children.length,0);
 console.log('FoodKeeper UI contract: ambiguous options, raw storage basis, text safety and unchanged pickup clock passed.');
+
+async function testRescueWorkflow() {
+  const bakery=JSON.parse(source.match(/SAMPLE_SCENARIOS = (\[[\s\S]*?\n\])/)[1]).find(item=>item.id==='bakery');
+  assert.equal(bakery.posting_text,'roughly 200 loaves of day-old bread and pastries from three store locations');
+  assert.equal(bakery.pallet_count,1,'Audited quantity is an explicit hypothetical capacity scenario');
+  assert.match(bakery.notes,/hypothetical 1-pallet.*not a loaves-to-pallet conversion/);
+  const dairy={...scenario,id:'dairy'};
+  const requests=[];
+  context.fetch=async (url,options)=>{requests.push({url,options});return {ok:true,json:async()=>[dairy,bakery]};};
+  await context.loadScenarios();
+  const choices=nodes.get('scenario-buttons').children;
+  assert.equal(choices.length,3);
+  choices[0].onclick();
+  assert.equal(requests.length,1,'Selecting a preset must not call the live broker');
+  assert.equal(requests[0].url,'/api/scenarios');
+  let offer=context.buildRequest();
+  assert.equal(offer.required_storage,'ambient');
+  assert.equal(offer.pallet_count,1);
+  assert.equal(offer.posting_text,bakery.posting_text,'Preset must preserve the exact audited query');
+  assert.match(nodes.get('match-status').textContent,/hypothetical 1-pallet/);
+  assert.equal(offer.hours_remaining,24);
+  assert.equal(offer.donor_lat,bakery.donor_lat);
+  assert.equal(choices[0].getAttribute('aria-pressed'),'true');
+  choices[1].onclick();
+  assert.equal(context.buildRequest().required_storage,'cold');
+  assert.equal(context.buildRequest().hours_remaining,4);
+  choices[2].onclick();
+  offer=context.buildRequest();
+  assert.equal(offer.pallet_count,50);
+  assert.match(offer.posting_text,/50 pallets.*full lot/);
+  assert.equal(offer.donor_lat,bakery.donor_lat);
+  assert.equal(choices[0].getAttribute('aria-pressed'),'false');
+
+  context.renderResults({status:'no_match',pending_confirmation:[{
+    name:attack,elimination_reasons:[],confirmations_required:[attack,'Confirm actual storage']
+  }],eliminated_decoys:[{name:'Small store',elimination_reasons:['Capacity below full lot']} ]});
+  assert.equal(nodes.get('pending-container').classList.contains('hidden'),false);
+  assert.equal(nodes.get('pending-list').children[0].children[0].textContent,attack);
+  assert.match(nodes.get('pending-list').children[0].children[1].textContent,/Confirm actual storage/);
+  assert.equal(nodes.get('result-counts').textContent,'1 rejected · 1 awaiting details');
+  assert.equal(nodes.get('step-handoff').disabled,true);
+  assert.match(nodes.get('result-description').textContent,/do not extend a deadline/);
+
+  choices[0].onclick();
+  let resolveMatch;
+  const matchCalls=[];
+  context.fetch=(url,options)=>{
+    matchCalls.push({url,options});
+    return new Promise(resolve=>{resolveMatch=resolve;});
+  };
+  const first=context.runMatching();
+  assert.equal(nodes.get('review-panel').getAttribute('aria-busy'),'true');
+  assert.equal(nodes.get('pending-container').classList.contains('hidden'),true);
+  assert.equal(nodes.get('input-pallets').disabled,true);
+  assert(choices.every(button=>button.disabled),'All preset buttons are locked during a request');
+  await context.runMatching();
+  choices[2].onclick();
+  assert.equal(matchCalls.length,1,'Rapid clicks must not overlap live model requests');
+  assert.equal(nodes.get('input-pallets').value,1,'Locked preset actions must not change the in-flight offer');
+  resolveMatch({ok:true,json:async()=>({status:'blocked',message:'Toolbox unavailable'})});
+  await first;
+  assert.equal(nodes.get('input-pallets').disabled,false);
+  assert(choices.every(button=>!button.disabled));
+  assert.equal(nodes.get('review-panel').getAttribute('aria-busy'),'false');
+  assert.equal(nodes.get('action-retry').classList.contains('hidden'),false);
+
+  const payload={status:'draft',generation_mode:'deterministic_fallback',
+    winner:{name:'Food Bank',city:'Seattle',profile_source:'generated'},
+    runners_up:[{name:'One actual backup'}],
+    match_brief:{drafted_sms_outreach:'Please confirm acceptance.',drafted_email_outreach:'Email draft.',
+      clock_action_plan:'Confirm timing.',equity_rationale:'Neighborhood proxy, not individual eligibility.'},
+    provenance_warning:'Generated profiles; verify with recipient.'};
+  context.renderResults(payload);
+  assert.equal(nodes.get('step-handoff').disabled,false);
+  assert.equal(nodes.get('action-handoff').classList.contains('hidden'),false);
+  let copied=[];
+  context.navigator.clipboard={writeText:async text=>copied.push(text)};
+  await context.copyMatchBrief();
+  assert.match(copied[0],/Available backups: One actual backup\n/);
+  assert.match(copied[0],/Generation mode: deterministic_fallback/);
+  assert.match(copied[0],/Generated profiles; verify with recipient/);
+  assert.match(nodes.get('handoff-feedback').textContent,/no outreach was sent/);
+  assert.equal(nodes.get('step-handoff').getAttribute('aria-current'),'step');
+  await context.copyEmail();
+  assert.equal(copied[1],'Email draft.');
+  context.offerChanged();
+  await context.copyMatchBrief();
+  assert.equal(copied.length,2,'Changing an offer invalidates the previous copy payload');
+  assert.equal(nodes.get('step-handoff').disabled,true);
+  assert.equal(nodes.get('brief-container').classList.contains('hidden'),true);
+
+  context.fetch=async()=>{throw new Error('Network unavailable');};
+  await context.runMatching();
+  assert.equal(nodes.get('review-panel').getAttribute('data-state'),'blocked');
+  assert.equal(nodes.get('input-pallets').disabled,false,'Transport errors release the form lock');
+  assert.equal(nodes.get('action-retry').classList.contains('hidden'),false);
+  console.log('Rescue workflow: fill-only presets, pending facts, single-flight requests, invalidated results, truthful handoff copies and recoverable errors passed.');
+}
+testRescueWorkflow().catch(error=>{console.error(error);process.exitCode=1;});
