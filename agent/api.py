@@ -347,6 +347,7 @@ def index_dashboard():
         <p id="route-status" class="text-xs text-amber-300">Routing unavailable — no verified road route has been returned. Any dashed line is an illustrative straight-line connection.</p>
         <a id="external-directions" class="hidden text-sm text-sky-300 underline" target="_blank" rel="noopener noreferrer">Open directions in Google Maps (approximate endpoints; verify the address)</a>
         <p class="text-xs text-slate-400">Recipient points may represent ZIP-level locations. Confirm actual collection address, acceptance, storage and pickup with the recipient. Census indicators describe neighborhoods, not individual eligibility.</p>
+        <p id="map-tile-status" role="status" class="text-xs text-amber-300 hidden"></p>
         <div id="map"></div>
       </div>
 
@@ -388,6 +389,12 @@ def index_dashboard():
           </div>
         </div>
 
+        <div class="bg-slate-900/60 p-4 rounded-lg border border-slate-700/60">
+          <h3 class="text-xs font-semibold text-purple-300 uppercase mb-1">Who this helps</h3>
+          <p id="brief-equity" class="text-xs text-slate-300 leading-relaxed"></p>
+          <p class="text-[11px] text-slate-400 mt-2">Neighborhood evidence is approximate: ACS tract indicators describe the area near the recipient's ZIP-centroid location, not individual need or the recipient's actual service catchment. Confirm whom the recipient serves.</p>
+        </div>
+
         <!-- Outreach Drafts -->
         <div class="bg-slate-900/80 p-4 rounded-lg border border-slate-700 flex flex-col gap-3">
           <div class="flex justify-between items-center">
@@ -399,7 +406,7 @@ def index_dashboard():
             </button>
           </div>
           <div>
-            <span class="text-[11px] text-slate-400 uppercase font-semibold">Coordinator SMS (Urgent):</span>
+            <span class="text-[11px] text-slate-400 uppercase font-semibold">Coordinator SMS draft (may use multiple segments):</span>
             <div id="brief-sms" class="bg-slate-950 p-2.5 rounded border border-slate-800 text-xs text-emerald-300 font-mono mt-1"></div>
           </div>
           <div>
@@ -473,9 +480,36 @@ def index_dashboard():
         return;
       }
       map = L.map('map').setView([47.6062, -122.3321], 11);
-      L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
-        attribution: '&copy; OpenStreetMap &copy; CARTO', maxZoom: 19
-      }).addTo(map);
+      // Standard interactive OSM tiles use normal browser Referer and HTTP caching.
+      // No prefetch, offline downloads, cache-busting parameters or API keys.
+      const tiles = L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap contributors</a>',
+        maxZoom: 19, updateWhenIdle: true, keepBuffer: 1
+      });
+      const tileNotice = document.getElementById('map-tile-status');
+      let tileErrors = 0;
+      tiles.on('loading', () => { tileErrors = 0; });
+      tiles.on('tileerror', () => {
+        tileErrors += 1;
+        tileNotice.textContent = 'Street-map tiles are temporarily unavailable. Data markers and match briefs still work; use the Google Maps directions link for navigation.';
+        tileNotice.classList.remove('hidden');
+      });
+      tiles.on('load', () => {
+        if (!tileErrors) { tileNotice.textContent = ''; tileNotice.classList.add('hidden'); }
+      });
+      tiles.addTo(map);
+      if (typeof ResizeObserver !== 'undefined') {
+        let previousSize = '';
+        const observer = new ResizeObserver(entries => {
+          const size = entries[0].contentRect;
+          const key = `${size.width},${size.height}`;
+          if (size.width > 0 && size.height > 0 && key !== previousSize) {
+            previousSize = key;
+            requestAnimationFrame(() => map.invalidateSize({pan:false,animate:false}));
+          }
+        });
+        observer.observe(document.getElementById('map'));
+      }
       cityRecipientLayer = L.layerGroup().addTo(map);
       tractPointLayer = L.layerGroup().addTo(map);
       markersLayer = L.layerGroup().addTo(map);
@@ -733,6 +767,7 @@ def index_dashboard():
       document.getElementById('brief-justification').textContent = brief.match_justification || '';
       document.getElementById('brief-operational').textContent = brief.operational_verification || '';
       document.getElementById('brief-clock').textContent = brief.clock_action_plan || '';
+      document.getElementById('brief-equity').textContent = brief.equity_rationale || 'No neighborhood rationale returned. Review the tract evidence and confirm the recipient’s service area.';
       document.getElementById('brief-sms').textContent = brief.drafted_sms_outreach || '';
       document.getElementById('brief-email').textContent = brief.drafted_email_outreach || '';
       document.getElementById('brief-provenance').textContent = [
@@ -740,10 +775,20 @@ def index_dashboard():
         `Profile source: ${readable(winner.profile_source)}.`,
         fallback ? 'Generation mode: deterministic fallback.' : `Generation mode: ${readable(data.generation_mode)}.`
       ].join(' ');
-      if (markersLayer && markersLayer.getLayers().length) {
-        const bounds = new L.featureGroup(markersLayer.getLayers()).getBounds();
-        if (bounds.isValid()) map.fitBounds(bounds.pad(0.15));
-      }
+      if (map) fitSeattleResults(donor, winner, alternatives);
+    }
+    function seattleFitPoints(donor, winner, alternatives) {
+      // Only current eligible options control framing. Distant/rejected profiles
+      // must not zoom the Seattle demo out across the country.
+      return [donor,winner,...alternatives].filter(point => validPoint(point)
+        && point.latitude >= 47.20 && point.latitude <= 47.86
+        && point.longitude >= -122.55 && point.longitude <= -121.98)
+        .map(point => [point.latitude,point.longitude]);
+    }
+    function fitSeattleResults(donor, winner, alternatives) {
+      const points = seattleFitPoints(donor,winner,alternatives);
+      map.fitBounds(points.length ? points : [[47.20,-122.55],[47.86,-121.98]],
+        {padding:[24,24],maxZoom:points.length ? 13 : 11,animate:false});
     }
     async function copyOutreach() {
       try { await navigator.clipboard.writeText(document.getElementById('brief-sms').textContent); setStatus('Draft SMS copied. It has not been sent.'); }

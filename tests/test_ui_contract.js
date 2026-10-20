@@ -34,9 +34,10 @@ assert.throws(()=>context.buildRequest(),/positive pallet/);
 context.applyScenario(scenario);
 context.renderDecoys([{name:attack,elimination_reasons:[attack]}]);
 assert.equal(nodes.get('decoys-list').children[0].children[0].textContent,attack);
-context.renderResults({status:'draft',generation_mode:'deterministic_fallback',message:'Model unavailable',winner:{name:attack,profile_source:'generated'},donor:{name:attack},match_brief:{drafted_sms_outreach:attack},execution_trace:[{name:'vector_search_recipients'}]});
+context.renderResults({status:'draft',generation_mode:'deterministic_fallback',message:'Model unavailable',winner:{name:attack,profile_source:'generated'},donor:{name:attack},match_brief:{drafted_sms_outreach:attack,equity_rationale:attack},execution_trace:[{name:'vector_search_recipients'}]});
 assert.equal(nodes.get('runtime-status').textContent,'Fallback draft');
 assert.equal(nodes.get('brief-sms').textContent,attack);
+assert.equal(nodes.get('brief-equity').textContent,attack,'Equity rationale renders as safe text');
 assert.match(nodes.get('execution-trace').textContent,/vector_search_recipients/);
 assert.match(nodes.get('brief-provenance').textContent,/generated/);
 context.renderResults({status:'blocked',message:'MCP unavailable'});
@@ -67,3 +68,29 @@ assert.doesNotMatch(nodes.get('route-status').textContent,/min estimated/);
 context.renderRoute(null,{latitude:NaN,longitude:-122.3},{latitude:47.7,longitude:-122.4});
 assert.equal(nodes.get('external-directions').href,undefined);
 console.log('City/directions contract: valid heat values, missing-data exclusions, storage filters and safe Google Maps directions link passed.');
+
+const fit = context.seattleFitPoints(
+  {latitude:47.6097,longitude:-122.3422},
+  {latitude:47.82,longitude:-122.3},
+  [{latitude:40.7,longitude:-74},{latitude:47.6,longitude:-122.25}]
+);
+assert.equal(fit.length,3,'Distant profiles must not expand Seattle framing');
+const tileEvents = {};
+let tileUrl, tileOptions, fitOptions;
+const fakeMap = {setView(){return this;},fitBounds(points,options){fitOptions={points,options};}};
+context.L = {
+  map:()=>fakeMap,
+  tileLayer:(url,options)=>{tileUrl=url;tileOptions=options;return {on(name,fn){tileEvents[name]=fn;return this;},addTo(){return this;}};},
+  layerGroup:()=>({addTo(){return this;}}),
+};
+context.initMap();
+assert.equal(tileUrl,'https://tile.openstreetmap.org/{z}/{x}/{y}.png');
+assert.match(tileOptions.attribution,/https:\/\/www.openstreetmap.org\/copyright/);
+assert.equal(tileOptions.referrerPolicy,undefined,'Browser Referer default must remain enabled');
+tileEvents.loading(); tileEvents.tileerror(); tileEvents.load();
+assert.match(nodes.get('map-tile-status').textContent,/temporarily unavailable/);
+tileEvents.loading(); tileEvents.load();
+assert.equal(nodes.get('map-tile-status').textContent,'');
+context.fitSeattleResults({latitude:47.6,longitude:-122.3},{latitude:47.8,longitude:-122.3},[]);
+assert.equal(fitOptions.options.maxZoom,13);
+console.log('Map tile contract: OSM attribution, tile failure/recovery and bounded Seattle framing passed.');

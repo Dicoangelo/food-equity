@@ -1,10 +1,13 @@
 # Seattle retail & grocer rescue agent
 
 The implemented path is `api.py → ADK Runner → broker_match Python tool →
-MCP Toolbox → BigQuery VECTOR_SEARCH → deterministic constraints → Gemini brief`.
+MCP Toolbox → BigQuery VECTOR_SEARCH → deterministic constraints → grounded Match Brief`.
 The custom tool binds the validated posting; the model cannot invent candidates or
 relax the storage, capacity or deadline gates. Every response carries a compact
 execution trace. A retrieved profile is a proposal requiring recipient confirmation.
+Gemini chooses a bounded outreach tone and question order. All factual brief fields
+and outreach details are rendered from the final validated ranking and request;
+free-form model prose cannot reintroduce rejected recipients or invent dates.
 
 `matcher.py` contains pure constraint/ranking logic. Its direct BigQuery helper
 remains available for diagnosis, but the web broker calls the real MCP path in
@@ -40,6 +43,19 @@ process memory and is never printed):
 python scripts/smoke_live.py
 ```
 
+This checks completed agent execution, including honest no-match results. To require
+a positive match, supply an offer and `--require-match`, for example:
+
+```bash
+python scripts/smoke_live.py --storage ambient --quantity 2 --hours 24 \
+  --query "2 pallets of fresh sourdough and sliced sandwich bread, baked this morning, ambient dry storage" --require-match
+```
+
+The outcome depends on the actual time and profile service days; no scenario guarantees
+a viable match. On 20 October 2026, this bakery offer produced an eligible winner and
+two alternatives through the deployed service. Cold-food tests also correctly returned
+no viable match. These are generated-profile demonstrations, not secured donations.
+
 For browser use, start an authenticated local Cloud Run proxy in Cloud Shell:
 
 ```bash
@@ -59,6 +75,9 @@ and explicit `COSINE` distance. Do not run the loader or replace teammate tables
 as part of deployment. Individual organization operations are generated profiles;
 planted examples are synthetic. ZIP centroids and illustrative map lines are
 not exact facilities or driving routes.
+The city endpoint returned 389 tract points and 119 recipient profiles. The UI uses
+OpenStreetMap standard tiles with attribution and browser caching; it does not prefetch
+or offer offline tiles. See the [tile usage policy](https://operations.osmfoundation.org/policies/tiles/).
 
 Model failure after successful retrieval yields `status=draft` and
 `generation_mode=deterministic_fallback`. Tool/auth/query failure yields `blocked`
