@@ -105,6 +105,7 @@ const context = vm.createContext({
   requestAnimationFrame: fn => fn(),
   fetch() { throw new Error('Profile interactions must never make a network request'); },
 });
+vm.runInContext(fs.readFileSync(require('node:path').join(__dirname, '../agent/ui/offer-workflow.js'), 'utf8'), context);
 vm.runInContext(script, context);
 vm.runInContext(fs.readFileSync(path.join(__dirname, '../agent/ui/recipient-explorer.js'), 'utf8'), context);
 const explorer = vm.runInContext('RecipientExplorer', context);
