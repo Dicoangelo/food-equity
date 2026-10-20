@@ -3,7 +3,8 @@
 Example: python scripts/verify_live_release.py --output /tmp/live-release.json
 Use --skip-agent for health/data checks only (not proof of the ADK runtime).
 No credentials are written, no auth setup is attempted, and HTTP is not retried.
-The full run makes two real broker requests and consumes model/query quota.
+The full run makes two real broker requests and one exact-ID evidence read,
+consuming model/query quota. The evidence read does not invoke a model.
 """
 import argparse
 import asyncio
@@ -17,7 +18,7 @@ import re
 import subprocess
 import time
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 import httpx
@@ -30,6 +31,8 @@ FOODKEEPER_SHA256 = "e84caab9d4b603209e31d21d5027c41d29adfecbca7051ff7322e9fb022
 BAKERY_TEXT = "roughly 200 loaves of day-old bread and pastries from three store locations"
 MAX_RESPONSE_BYTES = 2 * 1024 * 1024
 MAX_STREAM_EVENTS = 256
+EVIDENCE_TIMEOUT_SECONDS = 35  # Server query budget 25s + cleanup 2s + network margin.
+MAX_EVIDENCE_BYTES = 131_072
 STREAM_PATH = "/api/match/stream"
 WORKFLOW_PATH = "/ui/offer-workflow.js"
 WORKFLOW_SOURCE = Path(__file__).resolve().parents[1] / "agent/ui/offer-workflow.js"
@@ -59,6 +62,14 @@ def timestamp(value):
         return result.astimezone(timezone.utc)
     except (ValueError, TypeError, AttributeError):
         raise VerificationError("invalid_timestamp") from None
+
+
+def recipient_evidence_path(identifier):
+    if type(identifier) is int:
+        identifier = str(identifier)
+    require(isinstance(identifier, str) and bool(re.fullmatch(
+        r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,99}", identifier)), "invalid_evidence_recipient_id")
+    return f"/api/recipients/{quote(identifier, safe='')}/evidence"
 
 
 def gcloud(*args):
@@ -180,6 +191,52 @@ class LiveClient:
         except (ValueError, UnicodeDecodeError):
             raise VerificationError("invalid_response_json") from None
         require(isinstance(body, dict), "response_not_object")
+        return receipt, body
+
+    def request_recipient_evidence(self, identifier):
+        """One bounded GET, with no retries, model calls or match payload."""
+        return asyncio.run(self._request_recipient_evidence(identifier))
+
+    async def _request_recipient_evidence(self, identifier):
+        path = recipient_evidence_path(identifier)
+        headers = {"Accept": "application/json"}
+        if self._token:
+            headers["Authorization"] = "Bearer " + self._token
+        started = time.monotonic()
+        raw = bytearray()
+        try:
+            async with asyncio.timeout(min(self.timeout, EVIDENCE_TIMEOUT_SECONDS)):
+                async with httpx.AsyncClient(
+                    timeout=min(self.timeout, EVIDENCE_TIMEOUT_SECONDS), follow_redirects=False,
+                ) as client:
+                    async with client.stream("GET", self.url + path, headers=headers) as response:
+                        status = response.status_code
+                        receipt = {"http_status": status}
+                        if status != 200:
+                            # Error bodies may contain provider details; never consume them.
+                            receipt["latency_ms"] = round((time.monotonic() - started) * 1000)
+                            return receipt, None
+                        content_type = response.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
+                        require(content_type == "application/json", "evidence_content_type")
+                        directives = {part.strip().lower() for part in
+                                      response.headers.get("Cache-Control", "").split(",")}
+                        require("no-store" in directives, "evidence_cache_contract")
+                        async for chunk in response.aiter_bytes():
+                            require(len(raw) + len(chunk) <= MAX_EVIDENCE_BYTES, "evidence_response_too_large")
+                            raw.extend(chunk)
+        except (TimeoutError, httpx.TimeoutException):
+            raise VerificationError("evidence_http_timeout") from None
+        except httpx.HTTPError:
+            raise VerificationError("http_unavailable_or_timeout") from None
+        try:
+            body = json.loads(raw)
+            json.dumps(body, allow_nan=False)
+        except (ValueError, UnicodeDecodeError):
+            raise VerificationError("invalid_evidence_json") from None
+        require(isinstance(body, dict), "evidence_response_not_object")
+        receipt.update(latency_ms=round((time.monotonic() - started) * 1000),
+                       response_bytes=len(raw), response_sha256=hashlib.sha256(raw).hexdigest(),
+                       cache_control_no_store=True)
         return receipt, body
 
     def request_stream(self, payload):
@@ -327,6 +384,55 @@ def check_city(body):
             "scope": "City endpoint viewport; not proof of full metro coverage"}
 
 
+def check_recipient_evidence(body, city_recipient, *, started_at, finished_at=None):
+    """Verify dataset provenance without promoting it to operational evidence."""
+    require(isinstance(body, dict) and body.get("status") == "ready", "recipient_evidence_not_ready")
+    identifier = str(city_recipient["recipient_id"])
+    recipient_evidence_path(identifier)
+    profile, source = body.get("profile"), body.get("source")
+    require(isinstance(profile, dict) and body.get("recipient_id") == identifier
+            and profile.get("recipient_id") == identifier, "recipient_evidence_id_mismatch")
+    require(isinstance(source, dict)
+            and source.get("kind") == "bigquery_recipient_snapshot"
+            and source.get("table") == "a4i_food.recipient_embeddings"
+            and source.get("transport") == "mcp"
+            and source.get("tool") == "get_recipient_evidence", "recipient_evidence_source")
+    require(all(obj.get("requires_confirmation") is True
+                and obj.get("operational_data_verified") is False for obj in (body, profile)),
+            "recipient_evidence_operational_claim")
+    provenance = profile.get("profile_source")
+    require(provenance in {"generated", "planted", "unknown"}
+            and provenance == city_recipient.get("profile_source")
+            and profile.get("synthetic_organization") is (provenance == "planted"),
+            "recipient_evidence_provenance")
+    require("observation_date" in body and body["observation_date"] is None
+            and all(key in source and source[key] is None
+                    for key in ("source_observed_at", "operational_confirmed_at")),
+            "recipient_evidence_observation_claim")
+    retrieved = timestamp(body.get("retrieved_at"))
+    require(timestamp(body.get("fetched_at")) == retrieved, "recipient_evidence_timestamp_mismatch")
+    finished_at = finished_at or datetime.now(timezone.utc)
+    # The two clocks are on different hosts; allow five seconds of skew, not stale cached data.
+    require(started_at - timedelta(seconds=5) <= retrieved <= finished_at + timedelta(seconds=5),
+            "recipient_evidence_stale_timestamp")
+    require(not ({"winner", "runners_up", "donor", "deadline_at", "match_brief", "execution_trace"} & body.keys())
+            and not ({"embedding", "embeddings", "email", "phone", "contact", "street_address",
+                      "score", "composite_score", "constraint_status", "deadline_at"} & profile.keys()),
+            "recipient_evidence_unexpected_match_or_private_fields")
+    require(isinstance(profile.get("name"), str) and bool(profile["name"].strip())
+            and body.get("code") is None
+            and body.get("unknown_fields") == sorted(k for k, value in profile.items() if value is None),
+            "recipient_evidence_profile_contract")
+    return {
+        "status": "ready", "recipient_id": identifier, "profile_source": provenance,
+        "retrieved_at": retrieved.isoformat(), "source": {
+            key: source[key] for key in ("kind", "table", "transport", "tool",
+                                        "source_observed_at", "operational_confirmed_at")},
+        "requires_confirmation": True, "operational_data_verified": False,
+        "observation_date": None, "match_result_fields_absent": True,
+    }
+
+
 def check_foodkeeper(body):
     products = body.get("products")
     require(body.get("status") == "options" and isinstance(products, list) and 0 < len(products) <= 5,
@@ -449,12 +555,14 @@ def check_broker(body, offer, stress=False):
 def run_checks(client, *, skip_agent=False, expected_commit=None, expected_revision=None):
     checks = []
 
-    def execute(name, path, validator, payload=None):
+    def execute(name, path, validator, payload=None, fetch=None):
         record = {"name": name, "endpoint": path, "passed": False}
         checks.append(record)
         started = time.monotonic()
         try:
-            if path == STREAM_PATH:
+            if fetch is not None:
+                receipt, body = fetch()
+            elif path == STREAM_PATH:
                 receipt, body = client.request_stream(payload)
             else:
                 receipt, body = client.request("GET" if payload is None else "POST", path, payload)
@@ -497,8 +605,24 @@ def run_checks(client, *, skip_agent=False, expected_commit=None, expected_revis
         return checks
     if not execute("offer_workflow_asset", WORKFLOW_PATH, check_workflow_asset):
         return checks
-    execute("city", "/api/city", check_city)
+    selected_recipient = {}
+
+    def select_city_recipient(body):
+        summary = check_city(body)
+        selected_recipient.update(body["recipients"][0])
+        recipient_evidence_path(selected_recipient.get("recipient_id"))
+        return summary
+
+    if not execute("city", "/api/city", select_city_recipient):
+        return checks
     execute("foodkeeper", "/api/foodkeeper?query=bread", check_foodkeeper)
+    evidence_started_at = datetime.now(timezone.utc)
+    if not execute(
+        "recipient_evidence", recipient_evidence_path(selected_recipient["recipient_id"]),
+        lambda body: check_recipient_evidence(body, selected_recipient, started_at=evidence_started_at),
+        fetch=lambda: client.request_recipient_evidence(selected_recipient["recipient_id"]),
+    ):
+        return checks
     if not skip_agent:
         for stress in (False, True):
             offer = make_offer(stress)
@@ -532,6 +656,8 @@ def main(argv=None):
                   "No-match can pass runtime verification; proposals never mean recipient acceptance or delivery.",
                   "FoodKeeper guidance never extends the donor deadline. No outreach is sent.",
                   "Bakery verifies streaming; capacity stress verifies JSON. Only two broker requests are made.",
+                  "One exact-ID MCP read uses an ID from the existing city response; it adds no model or match request.",
+                  "A fresh retrieval timestamp is not a source observation or operational confirmation.",
                   "Live cancellation is not probed; disconnect cleanup is covered by offline ASGI tests.",
               ]}
     token = None
@@ -542,7 +668,7 @@ def main(argv=None):
         report["checks"] = run_checks(LiveClient(report["target"]["url"], token), skip_agent=args.skip_agent,
                                      expected_commit=args.expected_commit,
                                      expected_revision=report["target"]["revision"])
-        expected_checks = (4 if args.skip_agent else 6) + int(args.expected_commit is not None)
+        expected_checks = (5 if args.skip_agent else 7) + int(args.expected_commit is not None)
         passed = len(report["checks"]) == expected_checks and all(c["passed"] for c in report["checks"])
         report["status"] = "passed" if passed else "failed"
         report["runtime_passed"] = passed and not args.skip_agent

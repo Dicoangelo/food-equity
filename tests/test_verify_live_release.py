@@ -120,6 +120,101 @@ def test_city_reports_actual_counts_and_keeps_missing_rates_unknown():
         smoke.check_city(body)
 
 
+def recipient_evidence_fixture(now=None):
+    now = now or datetime.now(timezone.utc)
+    profile = {
+        "recipient_id": "91", "name": "Fixture food bank", "profile_source": "generated",
+        "synthetic_organization": False, "requires_confirmation": True,
+        "operational_data_verified": False, "max_pallets": 2, "service_days": None,
+    }
+    return {
+        "status": "ready", "recipient_id": "91", "profile": profile, "code": None,
+        "retrieved_at": now.isoformat(), "fetched_at": now.isoformat(), "observation_date": None,
+        "requires_confirmation": True, "operational_data_verified": False,
+        "unknown_fields": ["service_days"],
+        "source": {
+            "kind": "bigquery_recipient_snapshot", "table": "a4i_food.recipient_embeddings",
+            "transport": "mcp", "tool": "get_recipient_evidence",
+            "source_observed_at": None, "operational_confirmed_at": None,
+        },
+    }
+
+
+def test_evidence_receipt_preserves_unknowns_without_replacing_match():
+    body = recipient_evidence_fixture(NOW)
+    before = json.dumps(body, sort_keys=True)
+    result = smoke.check_recipient_evidence(
+        body, city_fixture()["recipients"][0], started_at=NOW - timedelta(seconds=1),
+        finished_at=NOW + timedelta(seconds=1),
+    )
+    assert result["recipient_id"] == "91" and result["source"]["transport"] == "mcp"
+    assert result["requires_confirmation"] and not result["operational_data_verified"]
+    assert result["observation_date"] is None
+    assert result["match_result_fields_absent"] is True
+    assert "profile" not in result and "max_pallets" not in result
+    assert json.dumps(body, sort_keys=True) == before
+
+
+@pytest.mark.parametrize("provenance", ["generated", "planted", "unknown"])
+def test_evidence_provenance_may_be_synthetic_or_unknown_but_never_operational(provenance):
+    city_recipient = city_fixture()["recipients"][0]
+    city_recipient["profile_source"] = provenance
+    body = recipient_evidence_fixture(NOW)
+    body["profile"].update(profile_source=provenance, synthetic_organization=provenance == "planted")
+    result = smoke.check_recipient_evidence(body, city_recipient, started_at=NOW, finished_at=NOW)
+    assert result["profile_source"] == provenance
+    assert result["requires_confirmation"] and not result["operational_data_verified"]
+
+
+@pytest.mark.parametrize("mutation,code", [
+    (lambda b: b.update(status="unknown"), "recipient_evidence_not_ready"),
+    (lambda b: b.update(recipient_id="92"), "recipient_evidence_id_mismatch"),
+    (lambda b: b["profile"].update(recipient_id=91), "recipient_evidence_id_mismatch"),
+    (lambda b: b["source"].update(transport="direct_bigquery"), "recipient_evidence_source"),
+    (lambda b: b["source"].update(tool="vector_search_recipients"), "recipient_evidence_source"),
+    (lambda b: b["source"].update(table="other.recipient_embeddings"), "recipient_evidence_source"),
+    (lambda b: b.update(requires_confirmation=False), "recipient_evidence_operational_claim"),
+    (lambda b: b["profile"].update(operational_data_verified=True), "recipient_evidence_operational_claim"),
+    (lambda b: b["profile"].update(profile_source="verified"), "recipient_evidence_provenance"),
+    (lambda b: b["profile"].update(profile_source="planted", synthetic_organization=True), "recipient_evidence_provenance"),
+    (lambda b: b["profile"].update(synthetic_organization=True), "recipient_evidence_provenance"),
+    (lambda b: b.update(observation_date=NOW.isoformat()), "recipient_evidence_observation_claim"),
+    (lambda b: b["source"].update(operational_confirmed_at=NOW.isoformat()), "recipient_evidence_observation_claim"),
+    (lambda b: b["source"].pop("source_observed_at"), "recipient_evidence_observation_claim"),
+    (lambda b: b.update(fetched_at=(NOW + timedelta(seconds=1)).isoformat()), "recipient_evidence_timestamp_mismatch"),
+    (lambda b: b.update(retrieved_at=None), "invalid_timestamp"),
+    (lambda b: b.update(retrieved_at="2026-10-20T16:30:00"), "timezone_missing"),
+    (lambda b: b.update(winner={"recipient_id": "91"}), "recipient_evidence_unexpected_match_or_private_fields"),
+    (lambda b: b["profile"].update(composite_score=.9), "recipient_evidence_unexpected_match_or_private_fields"),
+    (lambda b: b["profile"].update(embedding=[.1]), "recipient_evidence_unexpected_match_or_private_fields"),
+    (lambda b: b["profile"].update(phone="private"), "recipient_evidence_unexpected_match_or_private_fields"),
+    (lambda b: b.update(unknown_fields=[]), "recipient_evidence_profile_contract"),
+])
+def test_evidence_gate_refuses_substitution_provenance_and_operational_claims(mutation, code):
+    body = recipient_evidence_fixture(NOW)
+    mutation(body)
+    with pytest.raises(smoke.VerificationError, match=code):
+        smoke.check_recipient_evidence(body, city_fixture()["recipients"][0], started_at=NOW, finished_at=NOW)
+
+
+@pytest.mark.parametrize("offset", [-6, 6, -86400])
+def test_evidence_timestamp_must_be_from_this_request(offset):
+    body = recipient_evidence_fixture(NOW + timedelta(seconds=offset))
+    with pytest.raises(smoke.VerificationError, match="recipient_evidence_stale_timestamp"):
+        smoke.check_recipient_evidence(body, city_fixture()["recipients"][0], started_at=NOW, finished_at=NOW)
+
+
+@pytest.mark.parametrize("identifier", [None, True, -1, "", "../match", "91?x=1", "91/evidence", ["91"]])
+def test_evidence_path_rejects_invalid_city_identifier(identifier):
+    with pytest.raises(smoke.VerificationError, match="invalid_evidence_recipient_id"):
+        smoke.recipient_evidence_path(identifier)
+
+
+def test_evidence_path_canonicalizes_integer_and_encodes_allowed_colon():
+    assert smoke.recipient_evidence_path(91) == "/api/recipients/91/evidence"
+    assert smoke.recipient_evidence_path("fixture:91") == "/api/recipients/fixture%3A91/evidence"
+
+
 def foodkeeper_fixture():
     return {
         "status": "options", "source": {"sha256": smoke.FOODKEEPER_SHA256},
@@ -242,6 +337,7 @@ class FakeClient:
             "/api/health": {"status": "ok", "cloud_dependencies": "not_checked"},
             "/api/city": city_fixture(), "/api/foodkeeper?query=bread": foodkeeper_fixture(),
             smoke.WORKFLOW_PATH: smoke.WORKFLOW_SOURCE.read_bytes(),
+            "/api/recipients/91/evidence": recipient_evidence_fixture(),
         }
         if payload:
             stress = payload["pallet_count"] == 10000
@@ -260,6 +356,9 @@ class FakeClient:
     def request_stream(self, payload):
         return self.request("POST", smoke.STREAM_PATH, payload)
 
+    def request_recipient_evidence(self, identifier):
+        return self.request("GET", smoke.recipient_evidence_path(identifier))
+
 
 @pytest.mark.parametrize("cheap", [False, True])
 def test_evidence_contains_no_token_and_cheap_mode_never_claims_runtime(monkeypatch, tmp_path, capsys, cheap):
@@ -271,7 +370,7 @@ def test_evidence_contains_no_token_and_cheap_mode_never_claims_runtime(monkeypa
     report = json.loads(path.read_text())
     assert report["runtime_passed"] is (not cheap)
     assert report["proposed_count"] == 0
-    assert len(report["checks"]) == (4 if cheap else 6)
+    assert len(report["checks"]) == (5 if cheap else 7)
     assert TOKEN not in path.read_text() + capsys.readouterr().out
 
 
@@ -318,7 +417,7 @@ def test_fallback_still_records_observed_proposals_without_runtime_success():
                 return {"http_status": 200, "latency_ms": 3}, body
             return super().request(method, path, payload)
     checks = smoke.run_checks(Fallback())
-    for check in checks[4:]:
+    for check in checks[5:]:
         assert check["passed"] is False
         assert check["response_status"] == "draft"
         assert check["observed_proposed_count"] == 1
@@ -568,3 +667,147 @@ def test_release_gate_keeps_exactly_two_broker_requests_across_both_transports()
     checks = smoke.run_checks(TrackingClient())
     assert all(check["passed"] for check in checks)
     assert [path for method, path in calls if method == "POST"] == [smoke.STREAM_PATH, "/api/match"]
+    assert calls.count(("GET", "/api/city")) == 1
+    assert calls.count(("GET", "/api/recipients/91/evidence")) == 1
+
+
+def test_exact_read_uses_city_identifier_instead_of_a_hardcoded_smoke_recipient():
+    calls = []
+    class DifferentCity(FakeClient):
+        def request(self, method, path, payload=None):
+            calls.append((method, path))
+            if path == "/api/recipients/112/evidence":
+                body = recipient_evidence_fixture()
+                body["recipient_id"] = body["profile"]["recipient_id"] = "112"
+                return {"http_status": 200}, body
+            receipt, body = super().request(method, path, payload)
+            if path == "/api/city":
+                body["recipients"][0]["recipient_id"] = 112
+            return receipt, body
+    checks = smoke.run_checks(DifferentCity(), skip_agent=True)
+    assert all(check["passed"] for check in checks)
+    assert calls.count(("GET", "/api/city")) == 1
+    assert calls.count(("GET", "/api/recipients/112/evidence")) == 1
+    assert not any(method == "POST" or path.endswith("/91/evidence") for method, path in calls)
+
+
+@pytest.mark.parametrize("status", [404, 409, 503])
+def test_failed_exact_read_blocks_release_before_model_calls(status):
+    calls = []
+    class BadEvidence(FakeClient):
+        def request(self, method, path, payload=None):
+            calls.append((method, path))
+            if path == "/api/recipients/91/evidence":
+                return {"http_status": status}, None
+            return super().request(method, path, payload)
+    checks = smoke.run_checks(BadEvidence())
+    assert checks[-1]["name"] == "recipient_evidence" and not checks[-1]["passed"]
+    assert checks[-1]["http_status"] == status
+    assert checks[-1]["error_code"] == "unexpected_http_status"
+    assert all(method == "GET" for method, _ in calls)
+    assert calls.count(("GET", "/api/city")) == 1
+    assert calls.count(("GET", "/api/recipients/91/evidence")) == 1
+
+
+def test_invalid_city_cannot_supply_an_evidence_path_or_trigger_model_calls():
+    class BadCity(FakeClient):
+        def request(self, method, path, payload=None):
+            assert method == "GET" and not path.endswith("/evidence")
+            receipt, body = super().request(method, path, payload)
+            if path == "/api/city":
+                body["recipients"][0]["recipient_id"] = "../match"
+            return receipt, body
+    checks = smoke.run_checks(BadCity())
+    assert checks[-1]["name"] == "city" and not checks[-1]["passed"]
+    assert checks[-1]["error_code"] == "invalid_evidence_recipient_id"
+
+
+def mock_evidence_http(monkeypatch, stream, *, status=200, content_type="application/json", cache="no-store"):
+    original_client = httpx.AsyncClient
+    requests = []
+    def handle(request):
+        requests.append(request)
+        assert request.method == "GET" and request.url == URL + "/api/recipients/91/evidence"
+        assert request.content == b"" and request.headers["Accept"] == "application/json"
+        return httpx.Response(status, headers={
+            "Content-Type": content_type, "Cache-Control": cache, "Location": "https://untrusted.example",
+        }, stream=stream)
+    def make_client(**kwargs):
+        assert kwargs["follow_redirects"] is False
+        assert kwargs["timeout"] <= smoke.EVIDENCE_TIMEOUT_SECONDS
+        return original_client(transport=httpx.MockTransport(handle), **kwargs)
+    monkeypatch.setattr(smoke.httpx, "AsyncClient", make_client)
+    return requests
+
+
+@pytest.mark.parametrize("token", [None, TOKEN])
+def test_evidence_get_uses_one_bounded_read_and_does_not_log_profile_or_token(monkeypatch, token):
+    raw = json.dumps(recipient_evidence_fixture(NOW)).encode()
+    stream = ByteStream([raw[:13], raw[13:]])
+    requests = mock_evidence_http(monkeypatch, stream, content_type="application/json; charset=utf-8")
+    receipt, body = smoke.LiveClient(URL, token).request_recipient_evidence(91)
+    assert len(requests) == 1 and stream.closed
+    assert requests[0].headers.get("Authorization") == ("Bearer " + token if token else None)
+    assert receipt["cache_control_no_store"] is True
+    assert receipt["response_sha256"] == hashlib.sha256(raw).hexdigest()
+    assert body == recipient_evidence_fixture(NOW)
+    assert TOKEN not in json.dumps(receipt)
+    assert "Fixture food bank" not in json.dumps(receipt)
+
+
+@pytest.mark.parametrize("status,content_type,cache,code", [
+    (302, "text/html", "", None),
+    (503, "text/html", "", None),
+    (200, "text/html", "no-store", "evidence_content_type"),
+    (200, "application/json", "max-age=3600", "evidence_cache_contract"),
+])
+def test_evidence_http_rejects_redirect_errors_mime_and_cached_response_without_reading_body(
+    monkeypatch, status, content_type, cache, code,
+):
+    class UnreadStream(ByteStream):
+        async def __aiter__(self):
+            pytest.fail("Must not read invalid or error response bodies")
+            yield b""
+    stream = UnreadStream([])
+    requests = mock_evidence_http(monkeypatch, stream, status=status, content_type=content_type, cache=cache)
+    client = smoke.LiveClient(URL, TOKEN)
+    if code:
+        with pytest.raises(smoke.VerificationError, match=code):
+            client.request_recipient_evidence("91")
+    else:
+        receipt, body = client.request_recipient_evidence("91")
+        assert receipt["http_status"] == status and body is None
+    assert len(requests) == 1 and stream.closed
+
+
+@pytest.mark.parametrize("raw,code", [
+    (b"not-json", "invalid_evidence_json"),
+    (b'{"value":NaN}', "invalid_evidence_json"),
+    (b"[]", "evidence_response_not_object"),
+    (b"x" * (smoke.MAX_EVIDENCE_BYTES + 1), "evidence_response_too_large"),
+])
+def test_evidence_malformed_or_oversized_body_closes_stream(monkeypatch, raw, code):
+    stream = ByteStream([raw])
+    mock_evidence_http(monkeypatch, stream)
+    with pytest.raises(smoke.VerificationError, match=code):
+        smoke.LiveClient(URL, TOKEN).request_recipient_evidence("91")
+    assert stream.closed
+
+
+@pytest.mark.parametrize("complete_json_before_stall", [False, True])
+def test_evidence_total_deadline_cancels_stalled_read_and_closes_stream(monkeypatch, complete_json_before_stall):
+    class StalledStream(ByteStream):
+        cancelled = False
+        async def __aiter__(self):
+            if complete_json_before_stall:
+                yield json.dumps(recipient_evidence_fixture()).encode()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                self.cancelled = True
+                raise
+    stream = StalledStream([])
+    requests = mock_evidence_http(monkeypatch, stream)
+    with pytest.raises(smoke.VerificationError, match="evidence_http_timeout"):
+        smoke.LiveClient(URL, TOKEN, timeout=.025).request_recipient_evidence("91")
+    assert stream.cancelled and stream.closed and len(requests) == 1
