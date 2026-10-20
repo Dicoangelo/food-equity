@@ -7,9 +7,10 @@ import os
 import logging
 from datetime import datetime, timezone
 from functools import lru_cache
+from pathlib import Path
 from typing import Literal, Optional
 from fastapi import FastAPI, HTTPException, Query
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -207,6 +208,16 @@ async def match_surplus(req: MatchRequest):
     return JSONResponse(content=result)
 
 
+@app.get("/ui/recipient-explorer.js", include_in_schema=False)
+def recipient_explorer_script():
+    return FileResponse(Path(__file__).parent / "ui/recipient-explorer.js", media_type="text/javascript")
+
+
+@app.get("/ui/recipient-explorer.css", include_in_schema=False)
+def recipient_explorer_style():
+    return FileResponse(Path(__file__).parent / "ui/recipient-explorer.css", media_type="text/css")
+
+
 @app.get("/", response_class=HTMLResponse)
 def index_dashboard():
     """Serves the full-featured interactive Map Dashboard for coordinators & team demos."""
@@ -304,6 +315,7 @@ def index_dashboard():
     #handoff-panel { background:#f8fafb; }
     #city-caveats { margin-top:8px; }
     #city-caveats p + p { margin-top:8px; }
+    #map-panel { grid-column:1 / -1; }
     #map { height:430px; width:100%; border:1px solid var(--line); border-radius:10px; }
     #map-controls label { min-height:40px; align-items:center; }
     #map-controls select { max-width:100%; }
@@ -345,6 +357,7 @@ def index_dashboard():
     }
     @media (prefers-reduced-motion:reduce) { * { scroll-behavior:auto !important; } }
   </style>
+  <link rel="stylesheet" href="/ui/recipient-explorer.css">
 </head>
 <body id="rescue-app">
   <a href="#offer-panel" class="skip-link">Skip to surplus offer</a>
@@ -517,6 +530,7 @@ def index_dashboard():
             <span class="text-xs font-bold text-positive uppercase tracking-wider">Proposed Match Brief</span>
             <h2 id="brief-winner-name" class="text-2xl font-bold text-ink">Winner Name</h2>
             <p id="brief-winner-address" class="text-xs text-muted">Address</p>
+            <button id="inspect-winner" class="action-secondary" type="button" onclick="RecipientExplorer.select(currentPayload?.winner?.recipient_id, this)">Inspect profile &amp; offer fit</button>
           </div>
           <div class="brief-badges">
             <span id="brief-badge-storage" class="text-xs font-semibold px-3 py-1 rounded surface-inset text-accent border border-control">Storage</span>
@@ -590,22 +604,29 @@ def index_dashboard():
 
       </div>
 
+      <details id="run-evidence" class="surface-card rounded-xl p-4 border border-line hidden">
+        <summary class="text-sm text-secondary cursor-pointer">Live execution trace</summary>
+        <pre id="execution-trace" class="whitespace-pre-wrap break-words text-xs text-muted mt-2"></pre>
+      </details>
+
+
+    </div>
+
       <!-- Map Card -->
       <div id="map-panel" class="surface-card rounded-xl p-4 border border-line flex flex-col gap-3">
         <div class="flex flex-wrap gap-3 justify-between items-center px-1">
           <div class="flex items-center gap-2 text-sm font-semibold text-ink">
             <i class="fa-solid fa-map-location-dot text-positive"></i>
-            <span>Seattle Match Map</span>
+            <span>Seattle recipients &amp; offer fit</span>
           </div>
           <div class="flex flex-wrap items-center gap-3 text-xs">
             <span class="flex items-center gap-1"><span class="w-3 h-3 rounded-full dot-donor inline-block"></span> Donor</span>
-            <span class="flex items-center gap-1"><span class="w-3 h-3 rounded-full dot-winner inline-block"></span> Winner</span>
-            <span class="flex items-center gap-1"><span class="w-3 h-3 rounded-full dot-viable inline-block"></span> Viable</span>
-            <span class="flex items-center gap-1"><span class="w-3 h-3 rounded-full dot-rejected inline-block"></span> Eliminated Decoy</span>
+            <span>1 = proposed · 2–3 = backups · ? = needs details · × = rejected</span>
           </div>
         </div>
         <div id="map-controls" class="flex flex-wrap gap-3 items-center text-xs surface-inset p-3 rounded-lg">
           <button id="btn-city" onclick="loadCityData()" class="action-secondary">Load city data</button>
+          <button id="fit-recipient-view" onclick="fitRecipientView()" class="action-secondary">Fit visible profiles</button>
           <label class="flex items-center gap-1"><input id="show-need" type="checkbox" checked onchange="renderCityLayers()"> Census need heatmap</label>
           <label class="flex items-center gap-1"><input id="show-recipients" type="checkbox" checked onchange="renderCityLayers()"> Recipient capabilities</label>
           <label for="heat-metric">Need indicator</label>
@@ -619,12 +640,43 @@ def index_dashboard():
         </div>
         <p id="city-status" role="status" class="text-xs text-warning">Needs data — load the Seattle census and recipient layers.</p>
         <p id="map-tile-status" role="status" class="text-xs text-warning hidden"></p>
-        <div id="map"></div>
+        <p class="text-sm text-secondary">Explore a profile, inspect its evidence, and compare the recipients returned for your offer. Dataset capacity is not confirmed availability.</p>
+        <div class="recipient-browser">
+          <div id="map" aria-label="Seattle approximate recipient and census locations"></div>
+          <section class="recipient-directory" aria-label="Recipient directory">
+            <label for="recipient-search">Find a recipient</label>
+            <input id="recipient-search" type="search" placeholder="Organization or city" oninput="renderCityLayers()" autocomplete="off">
+            <div class="recipient-filters">
+              <div>
+                <label for="outcome-filter">Offer decision</label>
+                <select id="outcome-filter" onchange="renderCityLayers()">
+                  <option value="all">All decisions</option>
+                  <option value="eligible">Eligible proposals</option>
+                  <option value="needs_confirmation">Needs confirmation</option>
+                  <option value="rejected">Rejected</option>
+                  <option value="not_evaluated">Not evaluated</option>
+                </select>
+              </div>
+              <div>
+                <label for="provenance-filter">Profile source</label>
+                <select id="provenance-filter" onchange="renderCityLayers()">
+                  <option value="all">All sources</option>
+                  <option value="generated">Generated operations</option>
+                  <option value="planted">Invented teaching case</option>
+                  <option value="unknown">Unknown source</option>
+                </select>
+              </div>
+            </div>
+            <p id="recipient-count" role="status" aria-live="polite">Loading recipient profiles…</p>
+            <div id="recipient-list"></div>
+          </section>
+        </div>
+        <section id="recipient-compare" aria-label="Compare current eligible proposals"></section>
         <div id="heat-legend" class="text-xs text-secondary">
           <div style="height:8px;background:linear-gradient(to right,#2563eb,#06b6d4,#facc15,#f97316,#ef4444);border-radius:4px;max-width:280px"></div>
           <span id="heat-legend-label">Low → high combined need (0–1); mean of poverty and no-vehicle rates. Smoothed tract-centroid points, not tract boundaries or individual hunger.</span>
         </div>
-        <p class="text-xs text-muted">Capability points: purple = freezer · blue = refrigeration · gray = other/unknown. These are dataset profiles, not live availability.</p>
+        <p class="text-xs text-muted">Unevaluated capability points: purple = freezer · blue = refrigeration · gray = other/unknown. An outlined marker is selected. These are dataset profiles, not live availability.</p>
         <p id="city-provenance" class="text-xs text-muted">Sources have not been loaded.</p>
         <details class="text-xs text-muted"><summary class="cursor-pointer">Sources and limits of this map</summary><div id="city-caveats"></div><pre id="city-source-details" class="whitespace-pre-wrap break-words mt-2"></pre></details>
         <p id="route-status" class="text-xs text-warning">Routing unavailable — no verified road route has been returned. Any dashed line is an illustrative straight-line connection.</p>
@@ -633,16 +685,13 @@ def index_dashboard():
 
       </div>
 
-      <details id="run-evidence" class="surface-card rounded-xl p-4 border border-line hidden">
-        <summary class="text-sm text-secondary cursor-pointer">Live execution trace</summary>
-        <pre id="execution-trace" class="whitespace-pre-wrap break-words text-xs text-muted mt-2"></pre>
-      </details>
-
-
-    </div>
-
   </main>
   </div>
+
+  <aside id="recipient-detail" class="hidden" role="dialog" aria-labelledby="recipient-detail-title" tabindex="-1">
+    <button id="recipient-close" type="button" class="action-secondary" onclick="RecipientExplorer.close()" aria-label="Close recipient profile">Close profile</button>
+    <div id="recipient-detail-content"></div>
+  </aside>
 
   <!-- Leaflet & App JS -->
   <script>
@@ -733,6 +782,7 @@ def index_dashboard():
       document.getElementById('decoys-list').replaceChildren(textNode('p','Run the updated offer to refresh its candidate checks.'));
       scenarioButtons.forEach(button => button.setAttribute('aria-pressed','false'));
       if (markersLayer) markersLayer.clearLayers();
+      renderCityLayers();
       reviewState('idle','Ready to check this offer','Review the quantity, storage and actual pickup window, then run a live match.');
       setWorkflow('offer');
       setStatus('Ready to check the current offer.');
@@ -1120,20 +1170,24 @@ def index_dashboard():
         if (heatLayer && map) { map.removeLayer(heatLayer); heatLayer = null; }
         document.getElementById('city-status').textContent = `Needs data — ${error.message}`;
         document.getElementById('city-provenance').textContent = 'No city data displayed. No heat values or recipient capabilities were fabricated.';
+        renderCityLayers();
       } finally { btn.disabled = false; }
     }
     function renderCityLayers() {
-      if (!cityPayload) return;
-      const tracts = cityPayload.tracts || [];
-      const recipients = cityPayload.recipients || [];
+      if (typeof RecipientExplorer !== 'undefined') RecipientExplorer.refresh();
+      const tracts = cityPayload?.tracts || [];
+      const recipients = cityPayload?.recipients || [];
       const metric = document.getElementById('heat-metric').value || 'need_score';
       const filter = document.getElementById('capability-filter').value || 'all';
       const points = heatPoints(tracts, metric);
-      const visibleRecipients = recipients.filter(r => capabilityVisible(r, filter));
+      const visibleRecipients = typeof RecipientExplorer !== 'undefined'
+        ? RecipientExplorer.visibleRecipients() : recipients.filter(r => capabilityVisible(r, filter));
       const metricLabel = metric === 'need_score' ? 'Combined need = mean of poverty and no-vehicle rates' : metric === 'poverty_rate' ? 'Poverty rate' : 'No-vehicle household rate';
       document.getElementById('heat-legend-label').textContent = `Low → high ${metricLabel} (0–1). Smoothed tract-centroid need proxy; density affects intensity. Not tract boundaries, household food insecurity or individual eligibility.`;
-      document.getElementById('city-status').textContent = `${points.length} census points · ${visibleRecipients.length} recipient profiles in this view. Source caveats are listed below.`;
-      document.getElementById('city-status').className = 'text-xs text-secondary';
+      if (cityPayload) {
+        document.getElementById('city-status').textContent = `${points.length} census points · ${visibleRecipients.length} recipient profiles in this view. Source caveats are listed below.`;
+        document.getElementById('city-status').className = 'text-xs text-secondary';
+      }
       if (!map || !cityRecipientLayer || !tractPointLayer) return;
       cityRecipientLayer.clearLayers();
       tractPointLayer.clearLayers();
@@ -1159,13 +1213,26 @@ def index_dashboard():
         const point = cityPoint(recipient);
         if (!validPoint(point)) return;
         const cold = capabilityVisible(recipient, 'cold');
-        L.circleMarker([point.latitude,point.longitude], {radius:5,color:recipient.frozen_storage === true ? '#a78bfa' : cold ? '#38bdf8' : '#94a3b8',weight:2,fillOpacity:0.7})
-          .addTo(cityRecipientLayer).bindPopup(popup(readable(recipient.name), [
+        const decision = recipient._decision || 'not_evaluated';
+        const rank = [currentPayload?.winner, ...(currentPayload?.runners_up || [])]
+          .findIndex(row => row && String(row.recipient_id) === String(recipient.recipient_id)) + 1;
+        let marker;
+        if (decision !== 'not_evaluated') {
+          const color = decision === 'rejected' ? '#b5474d' : decision === 'needs_confirmation' ? '#94631f' : rank === 1 ? '#197764' : '#176b96';
+          const symbol = decision === 'rejected' ? '×' : decision === 'needs_confirmation' ? '?' : String(rank || '✓');
+          // Only application-owned symbols/colors are HTML; profile data remain text nodes.
+          const icon = L.divIcon({className:'custom-pin',html:`<div style="background:${color};color:white;border-radius:50%;padding:5px;text-align:center;font-weight:700">${symbol}</div>`,iconSize:[32,32],iconAnchor:[16,16]});
+          marker = L.marker([point.latitude,point.longitude], {icon,title:readable(recipient.name)});
+        } else {
+          marker = L.circleMarker([point.latitude,point.longitude], {radius:5,color:recipient.frozen_storage === true ? '#a78bfa' : cold ? '#38bdf8' : '#94a3b8',weight:2,fillOpacity:0.7});
+        }
+        marker.addTo(cityRecipientLayer).bindPopup(popup(readable(recipient.name), [
             `Profile storage: ${readable(recipient.cold_storage)}; freezer: ${readable(recipient.frozen_storage)}`,
             `Profile capacity: ${readable(recipient.max_pallets, ' pallets')}`,
             `Receiving days: ${readable(recipient.service_days)}`, `Source: ${readable(recipient.profile_source)}`,
             'Approximate location; capability and current availability require confirmation.'
           ]));
+        if (typeof RecipientExplorer !== 'undefined') RecipientExplorer.markMarker(marker, recipient);
       });
     }
     function renderRoute(route, donor, winner) {
@@ -1179,6 +1246,12 @@ def index_dashboard():
       // Google directions open on Google Maps; no road geometry or travel time is invented here.
       document.getElementById('route-status').textContent = 'Routing unavailable on this map — open Google Maps to calculate directions using approximate endpoints. Dashed line is an illustrative straight-line connection; no travel time is claimed.';
       if (markersLayer && validPoint(donor) && validPoint(winner)) L.polyline([[donor.latitude,donor.longitude],[winner.latitude,winner.longitude]], {color:'#10b981',weight:3,dashArray:'6, 6'}).addTo(markersLayer);
+    }
+    function fitRecipientView() {
+      if (!map) return;
+      const recipients = typeof RecipientExplorer !== 'undefined'
+        ? RecipientExplorer.visibleRecipients() : (cityPayload?.recipients || []);
+      fitSeattleResults(currentPayload?.donor || {}, {}, recipients.map(cityPoint));
     }
     async function searchFoodKeeper() {
       const button = document.getElementById('btn-foodkeeper');
@@ -1322,6 +1395,7 @@ def index_dashboard():
       document.getElementById('decoys-list').replaceChildren(textNode('p','Candidate checks are in progress for this offer.'));
       currentPayload = null;
       if (markersLayer) markersLayer.clearLayers();
+      renderCityLayers();
       setStatus('Checking semantic candidates, storage, capacity and the same pickup deadline…');
       reviewState('loading','Checking this offer','The live broker is retrieving candidates and checking feasibility. The offer is locked until this request finishes.');
       setWorkflow('review');
@@ -1358,7 +1432,17 @@ def index_dashboard():
       if (!markersLayer || !validPoint(point)) return;
       // All HTML below is static application markup; source data go into text nodes.
       const icon = L.divIcon({className: 'custom-pin', html: `<div style="background:${color};color:white;border-radius:50%;padding:7px;text-align:center">${symbol}</div>`, iconSize: [32,32], iconAnchor: [16,16]});
-      L.marker([point.latitude, point.longitude], {icon}).addTo(markersLayer).bindPopup(popup(title, lines));
+      const marker = L.marker([point.latitude, point.longitude], {icon, title}).addTo(markersLayer).bindPopup(popup(title, lines));
+      if (typeof RecipientExplorer !== 'undefined' && point.recipient_id != null) RecipientExplorer.markMarker(marker, point);
+    }
+    function profileButton(candidate) {
+      if (candidate.recipient_id == null) return null;
+      const button = textNode('button', 'Inspect profile & checks', 'action-secondary');
+      button.type = 'button';
+      button.onclick = () => {
+        if (typeof RecipientExplorer !== 'undefined') RecipientExplorer.select(candidate.recipient_id, button);
+      };
+      return button;
     }
     function renderDecoys(decoys) {
       const container = document.getElementById('decoys-list');
@@ -1369,11 +1453,14 @@ def index_dashboard():
         row.className = 'p-3 rounded-lg surface-card border border-negative text-secondary';
         row.appendChild(textNode('strong', d.name, 'block text-negative'));
         row.appendChild(textNode('span', (d.elimination_reasons || []).join(' '), 'text-muted'));
+        const inspect = profileButton(d);
+        if (inspect) row.appendChild(inspect);
         container.appendChild(row);
       });
     }
     function renderResults(data) {
       currentPayload = data;
+      renderCityLayers();
       document.getElementById('handoff-feedback').textContent = '';
       if (markersLayer) markersLayer.clearLayers();
       const decoys = data.eliminated_decoys || [];
@@ -1388,6 +1475,8 @@ def index_dashboard():
         row.appendChild(textNode('strong',candidate.name,'block text-warning'));
         const reasons = [...new Set([...(candidate.elimination_reasons || []),...(candidate.confirmations_required || [])])];
         row.appendChild(textNode('p',reasons.join(' ') || 'Confirm the missing recipient details before treating this as a viable match.','text-secondary'));
+        const inspect = profileButton(candidate);
+        if (inspect) row.appendChild(inspect);
         pendingList.appendChild(row);
       });
       const trace = data.execution_trace || [];
@@ -1420,6 +1509,8 @@ def index_dashboard():
         row.appendChild(textNode('strong', `${index + 2}. ${readable(candidate.name)}`, 'block text-accent'));
         row.appendChild(textNode('p', `Profile storage: ${readable(candidate.cold_storage)} · Capacity: ${readable(candidate.max_pallets, ' pallets')}`));
         row.appendChild(textNode('p', `Pickup window: ${readable(candidate.pickup_window_hours, 'h')} · Recipient confirmation required.`));
+        const inspect = profileButton(candidate);
+        if (inspect) row.appendChild(inspect);
         alternativeList.appendChild(row);
       });
       if (alternatives.length < 2) alternativeList.appendChild(textNode('p', alternatives.length ? 'One backup passed the available checks. A second option is not available.' : 'No backup passed the available checks. Confirm the top candidate before planning a collection.'));
@@ -1431,18 +1522,7 @@ def index_dashboard():
         `1 proposed · ${alternatives.length} backup${alternatives.length === 1 ? '' : 's'} · ${decoys.length} rejected · ${pending.length} awaiting details`);
       setWorkflow('review');
       addMarker(donor, '#f59e0b', '●', `Donor: ${readable(donor.name)}`, [donor.posting_text || '']);
-      addMarker(winner, '#10b981', '★', `Top candidate: ${readable(winner.name)}`, [
-        `${readable(winner.street)}, ${readable(winner.city)}`,
-        `Profile storage: ${readable(winner.cold_storage)}`,
-        `Profile capacity: ${readable(winner.max_pallets, ' pallets')}`,
-        `Source: ${readable(winner.profile_source)}`,
-        'Recipient acceptance and actual pickup are not yet confirmed.'
-      ]);
       renderRoute(data.route, donor, winner);
-      alternatives.forEach(v => addMarker(v, '#0ea5e9', '●', `Alternative: ${readable(v.name)}`, [
-        `Storage: ${readable(v.cold_storage)}`, `Capacity: ${readable(v.max_pallets, ' pallets')}`, `Source: ${readable(v.profile_source)}`
-      ]));
-      decoys.forEach(d => addMarker(d, '#f43f5e', '×', `Rejected: ${readable(d.name)}`, d.elimination_reasons || []));
       document.getElementById('brief-container').classList.remove('hidden');
       document.getElementById('brief-winner-name').textContent = readable(winner.name);
       document.getElementById('brief-winner-address').textContent = `${readable(winner.street)}, ${readable(winner.city)}, WA ${readable(winner.zip_code)}`;
@@ -1519,6 +1599,7 @@ def index_dashboard():
     };
     window.addEventListener?.('pagehide', () => stopVoiceSession('Session closed.'));
   </script>
+  <script src="/ui/recipient-explorer.js"></script>
 
 </body>
 </html>
