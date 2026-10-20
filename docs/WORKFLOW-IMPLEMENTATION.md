@@ -5,9 +5,10 @@ This branch fixes the two reproduced decision bugs from the Google platform revi
 ## Integration state
 
 - Branch: `codex/coherent-offer` in the isolated `food-equity-workflow-lane` checkout.
-- Based on committed delivery branch `700ae0e` (including request telemetry and exact-revision delivery work). The main checkout was not changed.
-- Application commits: `d813af2` (schedule interpretation), `36d4c90` (offer clock, broker progress, cancellation and tests), `51df4e9` (telemetry compatibility). Include all three; the original telemetry wrapper prevents disconnect cleanup on one ASGI path.
-- This work is local, not pushed or deployed. The existing deployment owner can fetch this checkout and review/cherry-pick its commits into the delivery branch.
+- Rebased onto `e48bd62`, including team main `90eb4cc` and the PR #13 candidate-tag/artifact fixes. The main checkout was not changed. The separate context-agent lane is excluded.
+- Dico authorized integration and live release on 20 October. The main build chat remains the single release owner and has reserved merge/promotion until its first CI release is confirmed or it explicitly hands ownership over.
+- This slice contains strict schedule interpretation, the shared offer clock, real progress/cancellation and pure-ASGI telemetry compatibility. These belong together: the earlier telemetry wrapper prevents disconnect cleanup on one ASGI path.
+- CI runs all three Node suites. The exact-candidate verifier must exercise the browser's stream and same-origin script before promotion, alongside the existing JSON refusal, data and Live gates. This document is not a deployment receipt.
 
 ## User-visible behavior
 

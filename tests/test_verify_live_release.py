@@ -1,11 +1,14 @@
 """Offline smoke-verifier checks: never contact Google, MCP or a model."""
+import asyncio
 from datetime import datetime, timedelta, timezone
 import hashlib
+import io
 import json
 from types import SimpleNamespace
 from urllib.error import HTTPError
 
 import pytest
+import httpx
 
 from scripts import verify_live_release as smoke
 
@@ -238,6 +241,7 @@ class FakeClient:
         bodies = {
             "/api/health": {"status": "ok", "cloud_dependencies": "not_checked"},
             "/api/city": city_fixture(), "/api/foodkeeper?query=bread": foodkeeper_fixture(),
+            smoke.WORKFLOW_PATH: smoke.WORKFLOW_SOURCE.read_bytes(),
         }
         if payload:
             stress = payload["pallet_count"] == 10000
@@ -253,6 +257,9 @@ class FakeClient:
             body = bodies[path]
         return {"http_status": 200, "latency_ms": 1}, body
 
+    def request_stream(self, payload):
+        return self.request("POST", smoke.STREAM_PATH, payload)
+
 
 @pytest.mark.parametrize("cheap", [False, True])
 def test_evidence_contains_no_token_and_cheap_mode_never_claims_runtime(monkeypatch, tmp_path, capsys, cheap):
@@ -264,7 +271,7 @@ def test_evidence_contains_no_token_and_cheap_mode_never_claims_runtime(monkeypa
     report = json.loads(path.read_text())
     assert report["runtime_passed"] is (not cheap)
     assert report["proposed_count"] == 0
-    assert len(report["checks"]) == (3 if cheap else 5)
+    assert len(report["checks"]) == (4 if cheap else 6)
     assert TOKEN not in path.read_text() + capsys.readouterr().out
 
 
@@ -311,8 +318,253 @@ def test_fallback_still_records_observed_proposals_without_runtime_success():
                 return {"http_status": 200, "latency_ms": 3}, body
             return super().request(method, path, payload)
     checks = smoke.run_checks(Fallback())
-    for check in checks[3:]:
+    for check in checks[4:]:
         assert check["passed"] is False
         assert check["response_status"] == "draft"
         assert check["observed_proposed_count"] == 1
         assert "mcp_result" in check["trace_stages"]
+
+
+def stream_fixture(body=None):
+    body = broker_fixture()[1] if body is None else body
+    events = [
+        {"type": "progress", "stage": stage}
+        for stage in ("accepted", "connecting", "retrieving", "checking_constraints", "finalizing")
+    ]
+    events[3]["candidate_count"] = 1
+    events.append({"type": "result", "data": body})
+    return [
+        {**event, "run_id": "run-fixture-1", "sequence": index}
+        for index, event in enumerate(events, start=1)
+    ]
+
+
+def wire_events(events):
+    return b"".join(json.dumps(event, separators=(",", ":")).encode() + b"\n" for event in events)
+
+
+class ByteStream(httpx.AsyncByteStream):
+    def __init__(self, chunks):
+        self.chunks = chunks
+        self.closed = False
+
+    async def __aiter__(self):
+        for chunk in self.chunks:
+            yield chunk
+            await asyncio.sleep(0)
+
+    async def aclose(self):
+        self.closed = True
+
+
+def mock_stream(monkeypatch, stream, *, content_type="application/x-ndjson", status=200):
+    original_client = httpx.AsyncClient
+    requests = []
+
+    def handle(request):
+        requests.append(request)
+        assert request.url == URL + smoke.STREAM_PATH
+        assert request.headers["Accept"] == "application/x-ndjson"
+        assert TOKEN not in str(request.url)
+        return httpx.Response(status, headers={"Content-Type": content_type,
+                                              "Location": "https://untrusted.example"},
+                              stream=stream)
+
+    def make_client(**kwargs):
+        return original_client(transport=httpx.MockTransport(handle), **kwargs)
+
+    monkeypatch.setattr(smoke.httpx, "AsyncClient", make_client)
+    return requests
+
+
+def test_stream_incrementally_reads_split_records_and_returns_only_safe_receipt(monkeypatch):
+    events = stream_fixture()
+    events.insert(3, {"type": "heartbeat", "run_id": "run-fixture-1", "sequence": 4})
+    for index, event in enumerate(events, start=1):
+        event["sequence"] = index
+    raw = wire_events(events)
+    # Split JSON tokens and the final newline across arbitrary network chunks.
+    stream = ByteStream([raw[:13], raw[13:57], raw[57:-1], raw[-1:]])
+    requests = mock_stream(monkeypatch, stream, content_type="application/x-ndjson; charset=utf-8")
+    receipt, body = smoke.LiveClient(URL, TOKEN).request_stream(smoke.make_offer(now=NOW))
+    assert body == events[-1]["data"]
+    assert receipt["stream_events"] == len(events)
+    assert receipt["response_sha256"] == hashlib.sha256(raw).hexdigest()
+    assert receipt["response_bytes"] == len(raw)
+    assert receipt["progress_stages"] == list(smoke.PROGRESS_STAGES[:4]) + ["finalizing"]
+    assert receipt["first_event_latency_ms"] >= 0
+    assert receipt["terminal_result_received"] is True
+    assert requests[0].headers["Authorization"] == "Bearer " + TOKEN
+    assert len(requests) == 1 and stream.closed
+    assert TOKEN not in json.dumps(receipt)
+    assert "run-fixture-1" not in json.dumps(receipt)
+    assert "match_brief" not in json.dumps(receipt)
+
+
+@pytest.mark.parametrize("mutate,code", [
+    (lambda events: events[0].update(stage="connecting"), "stream_accepted_first"),
+    (lambda events: events[1].update(run_id="different-run"), "stream_run_id_changed"),
+    (lambda events: events[1].update(run_id=""), "stream_invalid_run_id"),
+    (lambda events: events[1].update(sequence=3), "stream_sequence"),
+    (lambda events: events[1].update(sequence=True), "stream_sequence"),
+    (lambda events: events[2].update(stage="provider_secret"), "stream_progress_contract"),
+    (lambda events: events[2].update(stage="accepted"), "stream_stage_order"),
+    (lambda events: events[3].update(candidate_count=True), "stream_progress_counts"),
+    (lambda events: events[3].update(candidate_count=1_000_001), "stream_progress_counts"),
+    (lambda events: events[2].update(provider_message=TOKEN), "stream_progress_contract"),
+    (lambda events: events[2].update(type="provider"), "stream_event_type"),
+    (lambda events: events[-1].update(data=[]), "stream_result_contract"),
+    (lambda events: events[-1].update(type="error", message=TOKEN), "stream_terminal_error"),
+    (lambda events: events[-1]["data"].update(untrusted=float("nan")), "stream_invalid_json"),
+])
+def test_invalid_stream_contract_fails_without_provider_text(monkeypatch, mutate, code):
+    events = stream_fixture()
+    mutate(events)
+    stream = ByteStream([wire_events(events)])
+    mock_stream(monkeypatch, stream)
+    with pytest.raises(smoke.VerificationError, match=code) as caught:
+        smoke.LiveClient(URL, TOKEN).request_stream({})
+    assert TOKEN not in str(caught.value)
+    assert stream.closed
+
+
+@pytest.mark.parametrize("mutation,code", [
+    (lambda raw: raw[:-1], "stream_incomplete_line"),
+    (lambda raw: raw + b'{}\n', "stream_after_terminal"),
+    (lambda raw: b'[]\n', "stream_event_not_object"),
+    (lambda raw: b'not-json\n', "stream_invalid_json"),
+    (lambda raw: b'', "stream_missing_result"),
+])
+def test_stream_requires_one_terminal_result_and_clean_eof(monkeypatch, mutation, code):
+    stream = ByteStream([mutation(wire_events(stream_fixture()))])
+    mock_stream(monkeypatch, stream)
+    with pytest.raises(smoke.VerificationError, match=code):
+        smoke.LiveClient(URL, None).request_stream({})
+    assert stream.closed
+
+
+def test_stream_requires_actual_broker_progress(monkeypatch):
+    events = stream_fixture()
+    events = [events[0], events[-1]]
+    events[-1]["sequence"] = 2
+    mock_stream(monkeypatch, ByteStream([wire_events(events)]))
+    with pytest.raises(smoke.VerificationError, match="stream_missing_progress"):
+        smoke.LiveClient(URL, None).request_stream({})
+
+
+@pytest.mark.parametrize("status,content_type,code", [
+    (200, "application/json", "stream_content_type"),
+    (200, "text/html", "stream_content_type"),
+    (302, "text/html", None),
+    (503, "text/html", None),
+])
+def test_stream_http_contract_never_follows_redirect_or_reads_error_body(monkeypatch, status, content_type, code):
+    class UnreadStream(ByteStream):
+        async def __aiter__(self):
+            pytest.fail("Wrong-content-type, redirect and error bodies must not be consumed")
+            yield b""
+    stream = UnreadStream([])
+    requests = mock_stream(monkeypatch, stream, status=status, content_type=content_type)
+    client = smoke.LiveClient(URL, TOKEN)
+    if code:
+        with pytest.raises(smoke.VerificationError, match=code):
+            client.request_stream({})
+    else:
+        receipt, body = client.request_stream({})
+        assert receipt["http_status"] == status and body is None
+    assert len(requests) == 1 and stream.closed
+
+
+@pytest.mark.parametrize("limit,code", [("bytes", "response_too_large"), ("events", "stream_too_many_events")])
+def test_stream_size_and_event_limits(monkeypatch, limit, code):
+    monkeypatch.setattr(smoke, "MAX_RESPONSE_BYTES" if limit == "bytes" else "MAX_STREAM_EVENTS", 3)
+    stream = ByteStream([wire_events(stream_fixture())])
+    mock_stream(monkeypatch, stream)
+    with pytest.raises(smoke.VerificationError, match=code):
+        smoke.LiveClient(URL, None).request_stream({})
+    assert stream.closed
+
+
+@pytest.mark.parametrize("terminal_received", [False, True])
+def test_stream_deadline_cancels_stalled_read_and_closes_response(monkeypatch, terminal_received):
+    class StalledStream(ByteStream):
+        async def __aiter__(self):
+            yield wire_events(stream_fixture() if terminal_received else stream_fixture()[:1])
+            await asyncio.Event().wait()
+    stream = StalledStream([])
+    mock_stream(monkeypatch, stream)
+    with pytest.raises(smoke.VerificationError, match="stream_timeout"):
+        smoke.LiveClient(URL, None, timeout=0.025).request_stream({})
+    assert stream.closed
+
+
+def test_stream_records_progress_before_producer_finishes(monkeypatch):
+    observed_clocks = []
+    clock = [0.0]
+    monkeypatch.setattr(smoke.time, "monotonic", lambda: clock[0])
+
+    class DelayedStream(ByteStream):
+        async def __aiter__(self):
+            clock[0] = 0.01
+            yield wire_events(stream_fixture()[:1])
+            clock[0] = 0.02
+            observed_clocks.append(clock[0])
+            yield wire_events(stream_fixture()[1:])
+    mock_stream(monkeypatch, DelayedStream([]))
+    receipt, _ = smoke.LiveClient(URL, None).request_stream({})
+    assert observed_clocks == [0.02]
+    assert receipt["first_event_latency_ms"] == 10
+    assert receipt["latency_ms"] == 20
+
+
+@pytest.mark.parametrize("content_type", ["text/javascript", "application/javascript; charset=utf-8"])
+def test_workflow_asset_mime_and_exact_archived_source(monkeypatch, content_type):
+    source = smoke.WORKFLOW_SOURCE.read_bytes()
+    response = io.BytesIO(source)
+    response.status = 200
+    response.headers = {"Content-Type": content_type}
+    client = smoke.LiveClient(URL, TOKEN)
+    requests = []
+    def open_asset(request, **kwargs):
+        requests.append(request)
+        return response
+    client.opener = SimpleNamespace(open=open_asset)
+    receipt, body = client.request("GET", smoke.WORKFLOW_PATH)
+    evidence = smoke.check_workflow_asset(body)
+    assert evidence["source_sha256"] == receipt["response_sha256"]
+    assert evidence["bytes"] == len(source)
+    assert requests[0].full_url == URL + smoke.WORKFLOW_PATH
+    assert TOKEN not in json.dumps(receipt) + json.dumps(evidence)
+
+
+def test_wrong_workflow_asset_or_mime_fails_before_model_requests(monkeypatch):
+    response = io.BytesIO(b"not javascript")
+    response.status = 200
+    response.headers = {"Content-Type": "text/html"}
+    client = smoke.LiveClient(URL, None)
+    client.opener = SimpleNamespace(open=lambda *args, **kwargs: response)
+    with pytest.raises(smoke.VerificationError, match="workflow_content_type"):
+        client.request("GET", smoke.WORKFLOW_PATH)
+    with pytest.raises(smoke.VerificationError, match="workflow_asset_mismatch"):
+        smoke.check_workflow_asset(b"outdated script")
+
+    class BadAsset(FakeClient):
+        def request(self, method, path, payload=None):
+            assert payload is None, "No model calls after asset failure"
+            if path == smoke.WORKFLOW_PATH:
+                return {"http_status": 200}, b"outdated script"
+            return super().request(method, path, payload)
+    checks = smoke.run_checks(BadAsset())
+    assert checks[-1]["error_code"] == "workflow_asset_mismatch"
+    assert len(checks) == 2
+
+
+def test_release_gate_keeps_exactly_two_broker_requests_across_both_transports():
+    calls = []
+    class TrackingClient(FakeClient):
+        def request(self, method, path, payload=None):
+            calls.append((method, path))
+            return super().request(method, path, payload)
+    checks = smoke.run_checks(TrackingClient())
+    assert all(check["passed"] for check in checks)
+    assert [path for method, path in calls if method == "POST"] == [smoke.STREAM_PATH, "/api/match"]
