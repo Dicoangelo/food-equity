@@ -3,6 +3,8 @@
 Public app: https://seattle-food-broker-6ukbp746xa-ue.a.run.app/
 Release identity: https://seattle-food-broker-6ukbp746xa-ue.a.run.app/api/version
 
+This guide describes the PR #19 upgrade. Until its checked revision is promoted, the public URL serves the previous release and the recovery/add-microphone improvements are candidate-only. Check release identity before using this guide as evidence of deployed behavior.
+
 ## Three-minute walkthrough
 
 1. Open **Offer & match**. Use the bakery scenario for a repeatable starting point. Explain that this is a Seattle retail and grocer rescue prototype, using teaching/generated recipient profiles and Census context.
