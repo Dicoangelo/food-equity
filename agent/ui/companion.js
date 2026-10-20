@@ -12,7 +12,7 @@
   }
   function act(action, api) {
     if (action === 'stop') { api.stop(); return; }
-    api.open();
+    api.open(action);
     if (action === 'talk') api.start(true);
     else if (action === 'review') api.review();
     else api.focusText();
@@ -33,7 +33,7 @@
     const status=doc.createElement('p');status.className='companion-status';body.appendChild(status);
     const controls=doc.createElement('div');controls.className='companion-controls';body.appendChild(controls);
     const buttons={};
-    const api={open:()=>root.FoodWorkspace.openAssistant(buttons.text),start:on=>root.startVoiceSession?.(on),
+    const api={open:action=>root.FoodWorkspace.openAssistant(buttons[action]),start:on=>root.startVoiceSession?.(on),
       stop:()=>root.stopVoiceSession?.('Session stopped. Microphone and playback are off; your reviewed form is unchanged.'),
       focusText:()=>$('voice-text')?.focus(),review:()=>{$('voice-review')?.scrollIntoView({block:'nearest'});$('voice-apply')?.focus();}};
     for (const [action,label] of [['talk','Talk to agent'],['text','Type a note'],['review','Review changes'],['stop','Stop']]) {
@@ -59,6 +59,18 @@
       if(dock.parentElement!==host)host.appendChild(dock);
       dock.classList.toggle('companion-in-dialog',host===drawer);
     }
+    // Move before the workspace's close handler restores its recorded opener.
+    // Programmatic Apply/navigation closes do not use this hook or steal focus.
+    function prepareUserClose(event) {
+      const drawer=$('assistant-drawer');
+      const closes=event.type==='keydown' ? event.key==='Escape'
+        : !!event.target?.closest?.('#assistant-close, #assistant-scrim');
+      if(closes&&drawer&&!drawer.hidden&&dock.parentElement===drawer) {
+        doc.body.appendChild(dock);dock.classList.toggle('companion-in-dialog',false);
+      }
+    }
+    doc.addEventListener('keydown',prepareUserClose,true);
+    doc.addEventListener('click',prepareUserClose,true);
     const observer=new root.MutationObserver(sync);
     for(const id of ['voice-start','voice-stop','voice-apply','voice-review','voice-status'])
       if($(id))observer.observe($(id),{attributes:true,childList:true,subtree:true,characterData:true});
@@ -66,7 +78,7 @@
     observer.observe(doc.body,{attributes:true,attributeFilter:['class']});
     if($('recipient-detail'))observer.observe($('recipient-detail'),{attributes:true,attributeFilter:['class','hidden','aria-modal']});
     sync();
-    root.addEventListener('pagehide',()=>{observer.disconnect();root.stopVoiceSession?.('Session closed.');},{once:true});
+    root.addEventListener('pagehide',()=>{observer.disconnect();doc.removeEventListener('keydown',prepareUserClose,true);doc.removeEventListener('click',prepareUserClose,true);root.stopVoiceSession?.('Session closed.');},{once:true});
     return {sync};
   }
   const api={project,act,init};

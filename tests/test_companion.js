@@ -34,9 +34,11 @@ test('mobile dock reserves content space, supports safe areas and reduced motion
   assert.match(css,/@media\(max-width:600px\)/);
   assert.match(css,/@media\(prefers-reduced-motion:reduce\)/);
   assert.match(css,/padding-bottom:210px!important/);
+  assert.match(css,/companion-in-dialog \{position:static;flex:0 0 auto/);
+  assert.doesNotMatch(css,/#assistant-drawer:has/);
 });
 test('real initializer observes existing state and binds explicit controls without microphone startup',()=>{
-  const calls=[], nodes=new Map(), listeners={};let observer;
+  const calls=[], nodes=new Map(), listeners={},documentListeners={};let observer,actualOpener;
   class Element {
     constructor(){this.children=[];this.dataset={};this.attrs={};this.hidden=false;this.textContent='';this.disabled=false;this.events={};this.classes=new Set();this.classList={add:x=>this.classes.add(x),contains:x=>this.classes.has(x),toggle:(x,on)=>on?this.classes.add(x):this.classes.delete(x)};}
     set id(value){this._id=value;nodes.set(value,this);}get id(){return this._id;}
@@ -49,17 +51,21 @@ test('real initializer observes existing state and binds explicit controls witho
   nodes.get('voice-stop').disabled=true;nodes.get('voice-apply').disabled=true;nodes.get('voice-review').classes.add('hidden');nodes.get('assistant-drawer').hidden=true;
   const saved={};for(const key of ['document','MutationObserver','FoodWorkspace','startVoiceSession','stopVoiceSession','addEventListener'])saved[key]=globalThis[key];
   try {
-    globalThis.document={body:new Element(),createElement:()=>new Element(),getElementById:id=>nodes.get(id)};
+    globalThis.document={body:new Element(),createElement:()=>new Element(),getElementById:id=>nodes.get(id),addEventListener:(kind,fn)=>documentListeners[kind]=fn,removeEventListener:kind=>delete documentListeners[kind]};
     globalThis.MutationObserver=class{constructor(fn){this.sync=fn;observer=this;}observe(){}disconnect(){calls.push('disconnect');}};
-    globalThis.FoodWorkspace={openAssistant(){calls.push('open');nodes.get('assistant-drawer').hidden=false;}};
+    globalThis.FoodWorkspace={openAssistant(opener){actualOpener=opener;calls.push('open');nodes.get('assistant-drawer').hidden=false;}};
     globalThis.startVoiceSession=value=>calls.push(['mic',value]);globalThis.stopVoiceSession=()=>calls.push('stop');globalThis.addEventListener=(name,fn)=>listeners[name]=fn;
     require('../agent/ui/companion.js').init();assert.deepEqual(calls,[],'Rendering and observing never request capture');
     const dock=nodes.get('food-companion'),buttons=dock.children[1].children[2].children;
     globalThis.document.body.classes.add('workspace-nav-open');observer.sync();assert.equal(dock.hidden,true,'Unrelated navigation modal keeps companion controls out of its focus boundary');
     globalThis.document.body.classes.delete('workspace-nav-open');observer.sync();assert.equal(dock.hidden,false);
     const button=action=>buttons.find(b=>b.dataset.companionAction===action);
-    button('text').events.click();assert.deepEqual(calls,['open','focus']);observer.sync();assert.equal(dock.parentElement,nodes.get('assistant-drawer'));
-    calls.length=0;button('talk').events.click();assert.deepEqual(calls,['open',['mic',true]]);
+    button('text').events.click();assert.deepEqual(calls,['open','focus']);assert.equal(actualOpener,button('text'));observer.sync();assert.equal(dock.parentElement,nodes.get('assistant-drawer'));
+    documentListeners.keydown({type:'keydown',key:'Escape'});assert.equal(dock.parentElement,globalThis.document.body,'Dock is visible before workspace restores focus to its actual opener');
+    nodes.get('assistant-drawer').hidden=true;observer.sync();
+    calls.length=0;button('talk').events.click();assert.deepEqual(calls,['open',['mic',true]]);assert.equal(actualOpener,button('talk'));observer.sync();
+    documentListeners.click({type:'click',target:{closest:()=>true}});assert.equal(dock.parentElement,globalThis.document.body);nodes.get('assistant-drawer').hidden=true;observer.sync();
+    button('review').events.click();assert.equal(actualOpener,button('review'));observer.sync();
     nodes.get('voice-start').textContent='Microphone on';nodes.get('voice-start').disabled=true;nodes.get('voice-stop').disabled=false;observer.sync();assert.equal(dock.dataset.state,'microphone');assert.equal(button('stop').hidden,false);
     calls.length=0;button('stop').events.click();assert.deepEqual(calls,['stop']);
     calls.length=0;listeners.pagehide();assert.deepEqual(calls,['disconnect','stop']);
