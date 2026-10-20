@@ -137,7 +137,7 @@ const ViewContext = (() => {
 /* UI receipts have the same session/turn/view ownership as the server tools. */
 const ViewActionReceipts = (() => {
   let owner=null, waiting=false, evidenceVisible=false;
-  const calls=new Set();
+  const calls=new Set(), retired=new Set();
   const panel=()=>document.getElementById('voice-action-receipt');
   const safeText=(value,max=300)=>typeof value==='string'?value.slice(0,max):'Unknown';
   function renderEvidence(target,detail) {
@@ -155,7 +155,12 @@ const ViewActionReceipts = (() => {
       const candidates=Array.isArray(result.candidates)?result.candidates:[];
       const order=[result.winner_id,...(Array.isArray(result.alternative_ids)?result.alternative_ids.slice(0,2):[])].filter(Boolean);
       profiles=order.length?order.map(id=>candidates.find(row=>row.recipient_id===id)).filter(Boolean):candidates.slice(0,3);
-      if(!result.winner_id) target.appendChild(textNode('p','No eligible winner is reported. Review the missing facts or rejected constraints below.'));
+      if(!result.winner_id) {
+        const messages={none:'No match has been evaluated for the current offer. A displayed profile is not an eligibility decision.',
+          blocked:'The match could not be evaluated because required data was unavailable. This is not a no-match result.',
+          no_viable_match:'The completed evaluation reported no viable match. Review the missing facts or rejected constraints below.'};
+        target.appendChild(textNode('p',messages[result.status]||'No eligible winner is reported. Review the missing facts or rejected constraints below.'));
+      }
     }
     profiles.forEach((row,index)=>{
       const block=document.createElement('div');
@@ -166,6 +171,8 @@ const ViewActionReceipts = (() => {
       const labels={eligible:'Eligible proposal',needs_confirmation:'Needs confirmation',rejected:'Rejected for this offer',not_evaluated:'Not evaluated for this offer'};
       const provenance=['generated','planted'].includes(row.profile_source)?row.profile_source:'unknown';
       block.appendChild(textNode('p',`${labels[row.constraint_status]||'Decision unknown'} · ${provenance} profile · availability unconfirmed.`));
+      const measured=value=>Number.isFinite(value)&&value>=0?String(value):'Unknown';
+      block.appendChild(textNode('p',`Reported capacity: ${measured(row.max_pallets)} pallets · pickup window: ${measured(row.pickup_window_hours)} hours · storage: ${safeText(row.cold_storage,40)}.`));
       const reasons=[...(Array.isArray(row.elimination_reasons)?row.elimination_reasons:[]),
         ...(Array.isArray(row.confirmations_required)?row.confirmations_required:[]),
         ...(Array.isArray(row.reason_codes)?row.reason_codes:[])].filter(value=>typeof value==='string');
@@ -208,7 +215,7 @@ const ViewActionReceipts = (() => {
       && message.expected_offer_revision===view.offer_revision && message.expected_view_revision===view.view_revision;
   }
   function begin(message) {
-    if(owner || !validOwner(message)) { render('Turn ignored: the displayed view is no longer the one this response belongs to.');return false; }
+    if(owner || retired.has(message?.turn_id) || retired.size>=256 || !validOwner(message)) { render('Turn ignored: the displayed view is no longer the one this response belongs to.');return false; }
     owner={turn_id:message.turn_id,expected_offer_revision:message.expected_offer_revision,expected_view_revision:message.expected_view_revision};
     waiting=false;return true;
   }
@@ -236,16 +243,18 @@ const ViewActionReceipts = (() => {
           || message.resulting_revision!==owner.expected_view_revision) {
         render('Action refused: unsupported effect or missing display-context provenance.');return false;
       }
-      render('Display evidence read. This is an unverified browser projection; operations remain unconfirmed. No new matching, data fetch or navigation occurred.',message.payload);
+      render('Here is what the current view shows. This uses the information already on screen; recipient availability still needs confirmation. No new matching, data fetch or navigation occurred.',message.payload);
       return true;
     }
-    render(`${message.outcome === 'refused' ? 'Action refused' : message.outcome === 'cancelled' ? 'Action cancelled' : 'Stale action ignored'}: ${String(message.message||'No change was applied.').slice(0,1000)}`);
+    render(`${message.outcome === 'refused' ? 'Action refused' : message.outcome === 'cancelled' ? 'Action cancelled' : 'Stale action ignored'}: ${String(message.message||'No change was applied.').slice(0,1000)}`,message.payload?.authority==='untrusted_browser_projection'?message.payload:null);
     return true;
   }
-  function finish(message) { if(!owns(message))return false;owner=null;waiting=false;return true; }
-  function reset() { owner=null;waiting=false;calls.clear(); }
+  function finish(message) { if(!owns(message))return false;retire();return true; }
+  function retire() { if(owner)retired.add(owner.turn_id);owner=null;waiting=false; }
+  function clearContext() { render('Previous-context answer cleared. Ask again about the current view.'); }
   function invalidateEvidence() {
     if(evidenceVisible) render('The workspace changed. Ask again for evidence from the current view.');
   }
-  return {begin,owns,accept,finish,reset,invalidateEvidence,expectTurn:()=>{waiting=true;},busy:()=>waiting||!!owner,current:()=>!!owner&&validOwner(owner)};
+  function reset() { retire();calls.clear();retired.clear();render('Session ended. Ask again in a new session to use the current view.'); }
+  return {begin,owns,accept,finish,retire,reset,clearContext,invalidateEvidence,expectTurn:()=>{waiting=true;},busy:()=>waiting||!!owner,current:()=>!!owner&&validOwner(owner)};
 })();

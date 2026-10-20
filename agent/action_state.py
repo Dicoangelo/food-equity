@@ -87,7 +87,11 @@ class ActionState:
         if previous and previous['digest'] != digest:
             return self.result(call_id,owner,'refused','Action refused: this call identifier was already used for different arguments.',code='duplicate_call_changed')
         if self.cancelled and owner == self.owner:
-            return self.result(call_id,owner,'cancelled','Action cancelled with its interrupted turn. Start a new session.',code='turn_cancelled')
+            result = self.result(call_id,owner,'cancelled','Action cancelled with its interrupted turn. Continue with the next input.',code='turn_cancelled')
+            # Preserve IDs observed during retirement across provider replacement.
+            if not previous and len(self.calls) < MAX_ACTIONS:
+                self.calls[call_id] = {'digest':digest,'result':result}
+            return result
         if (not self.active or owner != self.owner or owner.expected_offer_revision != self.view.offer_revision
                 or owner.expected_view_revision != self.view.view_revision):
             return self.result(call_id,owner,'stale','Action ignored because its turn or displayed view is no longer current.',code='stale_action')

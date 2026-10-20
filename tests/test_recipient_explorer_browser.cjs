@@ -40,7 +40,7 @@ const server = http.createServer((req,res) => {
   if(req.url === '/') {res.setHeader('content-type','text/html');return res.end(fixtureHtml());}
   if(req.url.startsWith('/ui/')) {
     const name=req.url.slice('/ui/'.length);
-    if(!['recipient-explorer.js','recipient-explorer.css','offer-workflow.js','source-state.js','view-context.js','workspace.css','workspace.js'].includes(name)) {res.writeHead(404);return res.end();}
+    if(!['alert-intake.js','recipient-explorer.js','recipient-explorer.css','offer-workflow.js','source-state.js','view-context.js','workspace.css','workspace.js'].includes(name)) {res.writeHead(404);return res.end();}
     res.setHeader('content-type',name.endsWith('.js')?'text/javascript':'text/css');
     return res.end(fs.readFileSync(path.join(root,'agent/ui',name)));
   }
@@ -294,10 +294,59 @@ async function run() {
       assert.equal(await page.evaluate(()=>window.qaMicrophoneRequests),0,'Workspace and assistant presentation never request microphone access');
       assert.doesNotMatch(await page.locator('body').innerText(),/gods?-eye-view|god.?s eye view/i,'Product copy has no inspiration-repository branding');
       console.log(`Workspace browser QA passed at ${width}px.`);
+      await page.locator('.workspace-topbar [data-open-assistant]').click();
+      const beforeRecovery=await state(), recoveryCallsBefore=apiCount();
+      // Browser-level handler recovery with an explicit fixture transport, never a live provider.
+      await page.evaluate(()=>{
+        window.recoveryFixture={sockets:[]};
+        window.WebSocket=class {
+          constructor(){this.readyState=1;this.bufferedAmount=0;this.sent=[];recoveryFixture.sockets.push(this);
+            setTimeout(()=>this.emit({type:'ready',provider_epoch:1,audio_activity:true,input_correlation:true,max_recoveries:3}),0);}
+          send(raw){this.sent.push(typeof raw==='string'?JSON.parse(raw):raw);}
+          emit(value){this.onmessage?.({data:JSON.stringify(value)});}
+          close(){this.readyState=3;this.closed=true;}
+        };
+        voice.enabled=true;voice.config={max_session_seconds:180};refreshVoiceControls();
+        document.getElementById('voice-panel').open=true;
+      });
+      await page.locator('#voice-text').fill('Explain the displayed profile');await page.locator('#voice-send').click();
+      await page.waitForFunction(()=>recoveryFixture.sockets[0]?.sent.some(item=>item.type==='text'));
+      await page.evaluate(()=>{
+        const socket=recoveryFixture.sockets[0],view=ViewContext.snapshot();
+        recoveryFixture.old={turn_id:'browser-old',provider_epoch:1,request_id:socket.sent.find(item=>item.type==='text').request_id,
+          expected_offer_revision:view.offer_revision,expected_view_revision:view.view_revision};
+        socket.emit({type:'turn_started',...recoveryFixture.old});
+        socket.emit({type:'transcript',...recoveryFixture.old,role:'model',text:'Initial commentary.'});
+      });
+      await page.locator('#voice-text').fill('Correction: explain what still needs confirmation');await page.locator('#voice-send').click();
+      assert.equal(await page.evaluate(()=>recoveryFixture.sockets.length),1);
+      await page.evaluate(()=>{
+        const socket=recoveryFixture.sockets[0];
+        socket.emit({type:'recovering',provider_epoch:2,reason:'text_correction',recovery_count:1});
+        socket.emit({type:'transcript',...recoveryFixture.old,role:'model',text:'STALE COMMENTARY'});
+      });
+      assert.match(await page.locator('#voice-status').innerText(),/Updating the live session/);
+      assert.equal(await page.locator('#voice-stop').isEnabled(),true);
+      assert.equal(await page.locator('#voice-send').innerText(),'Queue correction');
+      if(output) await page.screenshot({path:path.join(output,`recovery-${width}.png`),fullPage:false});
+      await page.evaluate(()=>{
+        const socket=recoveryFixture.sockets[0],view=ViewContext.snapshot();socket.emit({type:'resumed',provider_epoch:2,recovery_count:1});
+        const fresh={turn_id:'browser-new',provider_epoch:2,request_id:socket.sent.filter(item=>item.type==='text').at(-1).request_id,
+          expected_offer_revision:view.offer_revision,expected_view_revision:view.view_revision};
+        socket.emit({type:'turn_started',...fresh});socket.emit({type:'turn_complete',...recoveryFixture.old});
+        socket.emit({type:'transcript',...fresh,role:'model',text:'Confirm the recipient capacity and storage.'});
+        socket.emit({type:'turn_complete',...fresh});
+      });
+      assert.doesNotMatch(await page.locator('#voice-transcript').innerText(),/STALE COMMENTARY/);
+      assert.match(await page.locator('#voice-transcript').innerText(),/Confirm the recipient capacity/);
+      assert.equal(await page.evaluate(()=>buildRequest().deadline_at),beforeRecovery.form.deadline_at);
+      assert.equal(apiCount(),recoveryCallsBefore,'Recovery cannot initiate matching or source fetches');
+      assert(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1));
+      await page.locator('#voice-stop').click();assert.equal(await page.evaluate(()=>recoveryFixture.sockets[0].closed),true);
     }
     assert.deepEqual(sockets,[],'The disabled Live fixture never opens a provider WebSocket');
     assert.deepEqual(errors,[],'Browser JS must not throw');
-    console.log('Browser QA passed: 1440/1024/768/390/320, real workspace navigation, preserved map/form/result/deadline, recipient assistant suspend/resume, inert/focus/Escape, readable evidence, no extra API calls or overflow.');
+    console.log('Browser QA passed: 1440/1024/768/390/320, workspace navigation, preserved map/form/result/deadline, recipient assistant suspend/resume, inert/focus/Escape, readable evidence, no extra API calls or overflow, typed correction recovery and terminal Stop.');
   } finally {await browser.close();}
 }
 if (serveOnly) {
