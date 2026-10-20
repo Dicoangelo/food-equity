@@ -1079,6 +1079,7 @@ def index_dashboard():
       clock.textContent = `Fixed pickup deadline: ${fields.deadline_at}. Editing the hours field explicitly replaces this clock; other offer edits preserve it.`;
       clock.classList.remove('hidden');
       setStatus('Voice draft applied for review. The exact deadline is preserved. No match or outreach has been requested.');
+      if (typeof RecipientExplorer !== 'undefined') RecipientExplorer.refresh();
       focusSection('offer-panel');
     }
     function validPoint(point) {
@@ -1323,6 +1324,7 @@ def index_dashboard():
       document.getElementById('voice-clock-note').classList.add('hidden');
       document.getElementById('origin-note').textContent = `Origin: ${sc.donor_name} demo coordinates. Pallet quantity is a scenario assumption; confirm the actual volume.`;
       setStatus(sc.notes || 'Scenario loaded. Review the offer, then run a live match.');
+      if (typeof RecipientExplorer !== 'undefined') RecipientExplorer.refresh();
     }
     function retailPresets(scenarios) {
       const bakery = scenarios.find(sc => sc.id === 'bakery');

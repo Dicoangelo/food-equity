@@ -339,4 +339,40 @@ assert.equal(document.body.classList.contains('recipient-sheet-open'), false);
 assert.equal(activeElement.getAttribute('data-recipient-id'), '1');
 assert.equal(pageShell.inert, false, 'Closing the sheet restores background interaction');
 assert.equal(sidebar.inert, true, 'Pre-existing inert state is preserved');
+
+// A desktop drawer stays open while the operator changes the offer elsewhere.
+// Its directions must use the completed mutation, not the previous origin.
+mobile = false;
+filters();
+setPayloads(city, match);
+explorer.select('1');
+function drawerDirections() {
+  const link = node('recipient-detail-content').querySelectorAll('a[href]')
+    .find(anchor => /google\.com\/maps\/dir/.test(anchor.href));
+  assert(link, 'The selected profile has valid approximate directions');
+  return new URL(link.href);
+}
+const changedScenario = {...fixedRequest, donor_name:'South Seattle pickup',
+  donor_lat:47.53, donor_lon:-122.32, hours_remaining:4};
+context.applyScenario(changedScenario);
+assert.equal(explorer.selectedId(), '1', 'The selected city profile remains open');
+assert.equal(drawerDirections().searchParams.get('origin'), '47.53,-122.32',
+  'Switching a preset refreshes an open drawer after the origin changes');
+assert.match(content(node('recipient-detail-content')), /Not evaluated for this offer/,
+  'Changing the origin clears previous match evidence');
+
+const reviewedDeadline = new Date(Date.now()+3*3600000).toISOString().replace('Z','+00:00');
+context.renderVoiceDraft({type:'draft',draft_id:'reviewed-origin',draft_version:1,
+  ready_for_review:true,missing_fields:[],fields:{
+    ...changedScenario,donor_name:'Reviewed pickup',donor_lat:47.61,donor_lon:-122.25,
+    hours_remaining:3,deadline_at:reviewedDeadline,
+  }});
+context.applyVoiceDraft();
+assert.equal(explorer.selectedId(), '1', 'Applying a draft preserves the selected city profile');
+assert.equal(drawerDirections().searchParams.get('origin'), '47.61,-122.25',
+  'Applying a voice draft refreshes directions after the reviewed origin changes');
+assert.equal(drawerDirections().searchParams.get('destination'), '47.6,-122.3');
+assert.equal(context.buildRequest().deadline_at, reviewedDeadline,
+  'Refreshing the drawer must retain the exact reviewed voice deadline');
+explorer.close();
 console.log('Recipient explorer: identity merge, provenance, unknowns, eligible fit, filters, exact clock, safe directions, stale clearing and keyboard/mobile focus passed.');
