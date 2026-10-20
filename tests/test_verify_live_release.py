@@ -173,6 +173,47 @@ def test_identity_and_revision_guards(monkeypatch):
         smoke.resolve_service()
 
 
+def candidate_reader(monkeypatch, *, revision="candidate", ready="True", account=None):
+    data = metadata()
+    data["status"]["traffic"].append({
+        "tag": "test-tag", "revisionName": revision, "url": "https://test-tag---example.run.app"})
+    def read(*args):
+        if args[:2] == ("auth", "list"):
+            return account or "student-fixture@qwiklabs.net"
+        if args[:3] == ("config", "get-value", "project"):
+            return smoke.PROJECT
+        if args[:3] == ("run", "revisions", "describe"):
+            return json.dumps({"status": {"conditions": [{"type": "Ready", "status": ready}]}})
+        return json.dumps(data)
+    monkeypatch.setattr(smoke, "gcloud", read)
+
+
+def test_candidate_is_exact_tagged_ready_revision_not_latest(monkeypatch):
+    candidate_reader(monkeypatch)
+    result = smoke.resolve_service(candidate_tag="test-tag", expected_revision="candidate")
+    assert result["revision"] == "candidate"
+    assert result["url"] == "https://test-tag---example.run.app"
+    with pytest.raises(smoke.VerificationError, match="candidate_revision_mismatch"):
+        smoke.resolve_service(candidate_tag="test-tag", expected_revision="other")
+    with pytest.raises(smoke.VerificationError, match="candidate_requires_tag_and_revision"):
+        smoke.resolve_service(candidate_tag="test-tag")
+    candidate_reader(monkeypatch, ready="False")
+    with pytest.raises(smoke.VerificationError, match="candidate_revision_not_ready"):
+        smoke.resolve_service(candidate_tag="test-tag", expected_revision="candidate")
+
+
+def test_ci_identity_requires_explicit_fixed_deployer(monkeypatch):
+    candidate_reader(monkeypatch, account=smoke.CI_DEPLOYER)
+    with pytest.raises(smoke.VerificationError, match="wrong_active_identity"):
+        smoke.resolve_service(candidate_tag="test-tag", expected_revision="candidate")
+    result = smoke.resolve_service(candidate_tag="test-tag", expected_revision="candidate",
+                                   expected_deployer=smoke.CI_DEPLOYER)
+    assert result["ci_identity_verified"] and not result["student_identity_verified"]
+    candidate_reader(monkeypatch, account="other@project.iam.gserviceaccount.com")
+    with pytest.raises(smoke.VerificationError, match="wrong_ci_identity"):
+        smoke.resolve_service(expected_deployer="other@project.iam.gserviceaccount.com")
+
+
 def test_http_redirect_never_forwards_authorization():
     assert smoke.NoRedirect().redirect_request(None, None, 302, "", {}, "https://elsewhere.example") is None
 
@@ -234,6 +275,31 @@ def test_existing_evidence_is_never_overwritten_or_auth_attempted(monkeypatch, t
     with pytest.raises(smoke.VerificationError, match="output_must_be_new"):
         smoke.main(["--output", str(path)])
     assert path.read_text() == "original"
+
+
+def test_public_checks_never_mint_or_send_identity_token(monkeypatch, tmp_path):
+    monkeypatch.setattr(smoke, "resolve_service", lambda *a: {"url": URL, "revision": "r1"})
+    monkeypatch.setattr(smoke, "identity_token", lambda: pytest.fail("No token for public demo"))
+    monkeypatch.setattr(smoke, "LiveClient", FakeClient)
+    assert smoke.main(["--output", str(tmp_path / "public.json"), "--public"]) == 0
+    client = smoke.LiveClient(URL, None)
+    def request(req, **kwargs):
+        assert req.get_header("Authorization") is None
+        raise HTTPError(req.full_url, 403, "discard", {}, None)
+    client.opener = SimpleNamespace(open=request)
+    client.request("GET", "/api/health")
+
+
+def test_source_telemetry_mismatch_stops_before_cloud_agent_calls():
+    calls = []
+    class VersionOnly:
+        def request(self, method, path, payload=None):
+            calls.append(path)
+            return {"http_status": 200}, {
+                "commit_sha": "b" * 40, "revision": "r1", "service": smoke.SERVICE}
+    checks = smoke.run_checks(VersionOnly(), expected_commit="a" * 40, expected_revision="r1")
+    assert calls == ["/api/version"]
+    assert checks[0]["error_code"] == "deployed_source_mismatch"
 
 
 def test_fallback_still_records_observed_proposals_without_runtime_success():

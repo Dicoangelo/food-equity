@@ -22,6 +22,7 @@ from urllib.request import HTTPRedirectHandler, Request, build_opener
 PROJECT = "qwiklabs-gcp-04-b992b9561e32"
 REGION = "us-east1"
 SERVICE = "seattle-food-broker"
+CI_DEPLOYER = f"food-equity-deploy@{PROJECT}.iam.gserviceaccount.com"
 FOODKEEPER_SHA256 = "e84caab9d4b603209e31d21d5027c41d29adfecbca7051ff7322e9fb0226c01d"
 BAKERY_TEXT = "roughly 200 loaves of day-old bread and pastries from three store locations"
 MAX_RESPONSE_BYTES = 2 * 1024 * 1024
@@ -59,10 +60,14 @@ def gcloud(*args):
         raise VerificationError("gcloud_unavailable_or_timeout") from None
 
 
-def resolve_service(service=SERVICE, explicit_url=None, expected_revision=None):
+def resolve_service(service=SERVICE, explicit_url=None, expected_revision=None,
+                    candidate_tag=None, expected_deployer=None):
     # Identity values are read only into memory and never included in the report.
     account = gcloud("auth", "list", "--filter=status:ACTIVE", "--format=value(account)")
-    require(bool(re.fullmatch(r"student-[^@\s]+@qwiklabs\.net", account)), "wrong_active_identity")
+    if expected_deployer is not None:
+        require(expected_deployer == CI_DEPLOYER and account == CI_DEPLOYER, "wrong_ci_identity")
+    else:
+        require(bool(re.fullmatch(r"student-[^@\s]+@qwiklabs\.net", account)), "wrong_active_identity")
     require(gcloud("config", "get-value", "project") == PROJECT, "wrong_active_project")
     require(bool(re.fullmatch(r"[a-z][a-z0-9-]{0,62}", service)), "invalid_service")
     try:
@@ -72,7 +77,32 @@ def resolve_service(service=SERVICE, explicit_url=None, expected_revision=None):
         ))["status"]
     except (ValueError, KeyError, TypeError):
         raise VerificationError("invalid_service_metadata") from None
-    url = metadata.get("url", "")
+    traffic = metadata.get("traffic", [])
+    if candidate_tag is not None:
+        require(bool(re.fullmatch(r"[a-z][a-z0-9-]{0,62}", candidate_tag))
+                and bool(expected_revision), "candidate_requires_tag_and_revision")
+        targets = [item for item in traffic if item.get("tag") == candidate_tag]
+        require(len(targets) == 1 and targets[0].get("revisionName") == expected_revision,
+                "candidate_revision_mismatch")
+        url = targets[0].get("url", "")
+        revision = expected_revision
+        try:
+            ready = json.loads(gcloud(
+                "run", "revisions", "describe", revision, "--project", PROJECT, "--region", REGION,
+                "--format=json(status.conditions)"))["status"]["conditions"]
+            require(any(row.get("type") == "Ready" and row.get("status") in ("True", True)
+                        for row in ready), "candidate_revision_not_ready")
+        except (ValueError, KeyError, TypeError):
+            raise VerificationError("invalid_revision_metadata") from None
+    else:
+        url = metadata.get("url", "")
+        revision = metadata.get("latestReadyRevisionName")
+        require(bool(revision) and revision == metadata.get("latestCreatedRevisionName"),
+                "latest_revision_not_ready")
+        require(expected_revision is None or expected_revision == revision, "revision_mismatch")
+        require(sum(t.get("percent", 0) for t in traffic if t.get("revisionName") == revision) == 100
+                and not any(t.get("percent", 0) > 0 and t.get("revisionName") != revision for t in traffic),
+                "traffic_not_all_latest_revision")
     parts = urlsplit(url)
     require(parts.scheme == "https" and bool(parts.hostname)
             and parts.hostname.endswith(".run.app") and not parts.username
@@ -80,16 +110,10 @@ def resolve_service(service=SERVICE, explicit_url=None, expected_revision=None):
             and not parts.query and not parts.fragment, "untrusted_service_url")
     url = url.rstrip("/")
     require(explicit_url is None or explicit_url.rstrip("/") == url, "service_url_mismatch")
-    revision = metadata.get("latestReadyRevisionName")
-    require(bool(revision) and revision == metadata.get("latestCreatedRevisionName"),
-            "latest_revision_not_ready")
-    require(expected_revision is None or expected_revision == revision, "revision_mismatch")
-    traffic = metadata.get("traffic", [])
-    require(sum(t.get("percent", 0) for t in traffic if t.get("revisionName") == revision) == 100
-            and not any(t.get("percent", 0) > 0 and t.get("revisionName") != revision for t in traffic),
-            "traffic_not_all_latest_revision")
     return {"project": PROJECT, "region": REGION, "service": service, "url": url,
-            "revision": revision, "student_identity_verified": True}
+            "revision": revision, "candidate_tag": candidate_tag,
+            "student_identity_verified": expected_deployer is None,
+            "ci_identity_verified": expected_deployer == CI_DEPLOYER}
 
 
 def identity_token():
@@ -111,10 +135,12 @@ class LiveClient:
 
     def request(self, method, path, payload=None):
         require(path.startswith("/api/") and not path.startswith("//"), "invalid_endpoint")
+        headers = {"Content-Type": "application/json", "Accept": "application/json"}
+        if self._token:
+            headers["Authorization"] = "Bearer " + self._token
         request = Request(self.url + path, method=method,
                           data=None if payload is None else json.dumps(payload, allow_nan=False).encode(),
-                          headers={"Authorization": "Bearer " + self._token,
-                                   "Content-Type": "application/json", "Accept": "application/json"})
+                          headers=headers)
         started = time.monotonic()
         try:
             with self.opener.open(request, timeout=self.timeout) as response:
@@ -291,7 +317,7 @@ def check_broker(body, offer, stress=False):
             "reason_codes": reason_codes, "requires_confirmation": True}
 
 
-def run_checks(client, *, skip_agent=False):
+def run_checks(client, *, skip_agent=False, expected_commit=None, expected_revision=None):
     checks = []
 
     def execute(name, path, validator, payload=None):
@@ -327,6 +353,14 @@ def run_checks(client, *, skip_agent=False):
         record.setdefault("latency_ms", round((time.monotonic() - started) * 1000))
         return record["passed"]
 
+    if expected_commit is not None:
+        def check_version(body):
+            require(isinstance(body, dict) and body.get("commit_sha") == expected_commit
+                    and body.get("revision") == expected_revision
+                    and body.get("service") == SERVICE, "deployed_source_mismatch")
+            return {"commit_sha": expected_commit, "revision": expected_revision, "service": SERVICE}
+        if not execute("version", "/api/version", check_version):
+            return checks
     if not execute("health", "/api/health", check_health):
         return checks
     execute("city", "/api/city", check_city)
@@ -345,8 +379,14 @@ def main(argv=None):
     parser.add_argument("--service", default=SERVICE)
     parser.add_argument("--url", help="Optional exact URL; must equal the verified service URL.")
     parser.add_argument("--expected-revision", help="Optional exact latest ready revision name.")
+    parser.add_argument("--candidate-tag", help="Verify this exact tagged revision before promotion; requires --expected-revision.")
+    parser.add_argument("--expected-deployer", choices=[CI_DEPLOYER], help="Explicit dedicated CI identity; default remains student-only.")
+    parser.add_argument("--public", action="store_true", help="Verify the already-public demo without minting an identity token; changes no IAM.")
+    parser.add_argument("--expected-commit", help="Verify /api/version reports this exact 40-character Git commit and resolved revision.")
     parser.add_argument("--skip-agent", action="store_true")
     args = parser.parse_args(argv)
+    require(args.expected_commit is None or bool(re.fullmatch(r"[0-9a-f]{40}", args.expected_commit)),
+            "invalid_expected_commit")
     require(not args.output.exists() and args.output.parent.is_dir(), "output_must_be_new_in_existing_directory")
     report = {"report_version": 1, "started_at": datetime.now(timezone.utc).isoformat(),
               "mode": "cheap_checks" if args.skip_agent else "full_agent_smoke", "status": "failed",
@@ -359,10 +399,13 @@ def main(argv=None):
               ]}
     token = None
     try:
-        report["target"] = resolve_service(args.service, args.url, args.expected_revision)
-        token = identity_token()
-        report["checks"] = run_checks(LiveClient(report["target"]["url"], token), skip_agent=args.skip_agent)
-        expected_checks = 3 if args.skip_agent else 5
+        report["target"] = resolve_service(args.service, args.url, args.expected_revision,
+                                          args.candidate_tag, args.expected_deployer)
+        token = None if args.public else identity_token()
+        report["checks"] = run_checks(LiveClient(report["target"]["url"], token), skip_agent=args.skip_agent,
+                                     expected_commit=args.expected_commit,
+                                     expected_revision=report["target"]["revision"])
+        expected_checks = (3 if args.skip_agent else 5) + int(args.expected_commit is not None)
         passed = len(report["checks"]) == expected_checks and all(c["passed"] for c in report["checks"])
         report["status"] = "passed" if passed else "failed"
         report["runtime_passed"] = passed and not args.skip_agent
