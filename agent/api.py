@@ -910,6 +910,7 @@ def index_dashboard():
       }
       if (voice.socket || voice.starting) stopVoiceSession('Offer changed. Start a new session to use the updated form.');
       voice.draft = null;
+      document.getElementById('voice-review').classList.add('hidden');
       refreshVoiceControls();
       currentPayload = null;
       resetMatchProgress(false);

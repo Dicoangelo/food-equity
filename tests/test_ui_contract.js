@@ -493,6 +493,7 @@ async function testVoiceIntake() {
   assert.equal(nodes.get('voice-apply').disabled,true,'Numeric strings must not bypass validation');
   context.offerChanged();
   assert.equal(textSocket.closed,true,'Editing the form ends a session whose context is now stale');
+  assert(nodes.get('voice-review').classList.contains('hidden'),'A form edit hides the prior session proposal and its deadline');
 
   let resolvePermission;
   context.navigator.mediaDevices.getUserMedia=()=>{micRequests++;return new Promise(resolve=>{resolvePermission=resolve;});};
