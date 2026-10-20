@@ -144,3 +144,22 @@ The direct probe proves only model connection and one generated audio turn under
 ## Prior corpus consulted
 
 Before web research, a cross-notebook query consulted **Agents for Impact — Innovation Lab**, `465d6523-bd82-42b8-ab71-cfe94379d3ed`, and **Food Equity — B12Give Reference & Hackathon Build**, `c325500c-cd9d-4a57-a265-8b27b52e43f6`. Both reported no Live/streaming API contracts in their sources. They support the human-review/deterministic-broker boundary; some deployment snapshots are older than this repo. Current official model/API documents and inspected installed SDK contracts therefore govern this proposal.
+
+
+## Isolated interruption-refinement protocol (review only)
+
+The `codex/context-agent` branch adds bounded provider replacement behind the existing browser WebSocket. This is not evidence of deployment or a fresh model probe. See [CURRENT-VIEW-REVIEW.md](CURRENT-VIEW-REVIEW.md) for the untrusted display boundary, explicit review flow and release gates.
+
+- `ready`: `provider_epoch`, `input_correlation=true`, `audio_activity=true`, `max_recoveries=3`.
+- Text: `{type:"text", text, request_id}`; the browser always supplies a positive monotonic ID. The typed verifier also supports the older deployed protocol.
+- Audio: `{type:"audio_start", provider_epoch, activity_id}` → owned `turn_started` with `activity_id` → owned `audio_ready`. Each input binary frame is eight header bytes (big-endian unsigned epoch/activity ID) plus PCM16k mono bytes; matching `audio_end` emits SDK `ActivityEnd`.
+- Model audio: `{type:"audio", provider_epoch, ...Owner, pcm}` with base64 PCM24k mono, at most 32,000 decoded bytes per envelope. Transcript, action result and completion carry the same generation and owner.
+- Recovery: `recovering` identifies the retired turn and reason; `resumed` arrives only after old transport cleanup and replacement connection. It does not resend or approve an operation. New `turn_started` echoes the input ID; delayed starts cannot acquire a newer pending request's ownership. Accepted `view_context_ack` also reports `recovery_required`; a view update after a completed turn can release the UI wait without reconnecting.
+
+The installed `google-genai==2.31.0` schema supports `RealtimeInputConfig(automatic_activity_detection=AutomaticActivityDetection(disabled=True))` and `send_realtime_input(activity_start=ActivityStart(), activity_end=ActivityEnd())`. Tests validate those concrete SDK fields and mock the transport; real model acceptance, microphone onset/noise behavior and reconnection latency remain unverified for this increment. The reference provider docs are [Live API activity detection](https://cloud.google.com/vertex-ai/generative-ai/docs/live-api/streamed-conversations) and [Google Gen AI SDK Live](https://googleapis.github.io/python-genai/#live).
+
+### Demo review and microphone controls
+
+The initial form snapshot is labelled **Current offer context**, not an agent proposal. It cannot be applied. Only a later accepted, versioned draft proposal enables Apply after field validation. The deadline is displayed in Seattle time with a live remaining-time label; the exact timezone-qualified timestamp is retained in the `<time datetime>` attribute and applied unchanged. Applying returns to the offer form with an explicit Find a viable match next step; no match or outreach runs automatically.
+
+A session begun with typed notes can add the microphone through a separate Start microphone click without replacing the WebSocket or draft. Microphone on is visible; Stop session releases tracks, worklets, contexts and queued playback. Audio remains bounded by the original session lifetime and recovery limits.

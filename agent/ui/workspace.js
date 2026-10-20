@@ -217,11 +217,35 @@
     return Boolean(drawer && !drawer.hidden);
   }
 
+  function prepareAssistantHelp() {
+    const panel = $('voice-panel');
+    const introduction = panel?.querySelector(':scope > p:first-of-type');
+    if (!introduction || panel.querySelector('.assistant-help')) return;
+    // Keep the full limitations available without hiding the audio consent cue
+    // or pushing the controls below a phone's first screen.
+    const cue = document.createElement('p');
+    cue.className = 'assistant-consent';
+    cue.textContent = 'Speak or type a note. Audio is sent only after Start microphone. Nothing is dispatched.';
+    const help = document.createElement('details');
+    help.className = 'assistant-help';
+    const summary = document.createElement('summary');
+    summary.textContent = 'How the assistant works';
+    introduction.before(cue, help);
+    help.append(summary, introduction);
+  }
+
+  function focusAssistant() {
+    // Opening a phone drawer should not immediately open the software keyboard.
+    // Desktop keeps the direct typing shortcut, while Tab follows natural order.
+    const target = window.innerWidth <= 640 ? $('assistant-close') : $('voice-text');
+    focus(target) || focus($('assistant-close'));
+  }
+
   function openAssistant(opener) {
     const drawer = $('assistant-drawer');
     if (!drawer) return false;
     if (assistantIsOpen()) {
-      focus($('voice-text')) || focus($('assistant-close'));
+      focusAssistant();
       return true;
     }
     // Transfer modal ownership without changing selected-recipient evidence.
@@ -241,7 +265,7 @@
     });
     if ($('voice-panel')) $('voice-panel').open = true;
     updateAssistantContext();
-    focus($('voice-text')) || focus($('assistant-close'));
+    focusAssistant();
     return true;
   }
 
@@ -336,6 +360,7 @@
   function init() {
     if (initialized || !document.body) return;
     initialized = true;
+    prepareAssistantHelp();
     document.addEventListener('click', event => {
       const target = event.target instanceof Element ? event.target : event.target?.parentElement;
       if (!target) return;

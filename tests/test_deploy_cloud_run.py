@@ -1,5 +1,6 @@
 """Execute deployment control flow against fake gcloud/verifiers; no cloud or network."""
 import json
+import hashlib
 import os
 from pathlib import Path
 import shutil
@@ -9,6 +10,7 @@ import sys
 import pytest
 
 SCRIPT = Path(__file__).parents[1] / 'scripts/deploy_cloud_run.sh'
+FIXTURE = Path(__file__).parent / 'fixtures/live-audio-check.wav'
 PROJECT = 'qwiklabs-gcp-04-b992b9561e32'
 
 
@@ -18,6 +20,9 @@ def deployment(tmp_path):
     scripts = root / 'scripts'
     scripts.mkdir(parents=True)
     shutil.copy(SCRIPT, scripts / SCRIPT.name)
+    fixture = root / 'tests/fixtures/live-audio-check.wav'
+    fixture.parent.mkdir(parents=True)
+    shutil.copy(FIXTURE, fixture)
     (root / '.gitignore').write_text('gha-creds-*.json\n')
     (scripts / 'verify_live_release.py').write_text('''
 import argparse,json,os
@@ -31,13 +36,32 @@ if __name__ == '__main__':
     p.add_argument('--public',action='store_true');a=p.parse_args()
     assert not list(Path(__file__).parents[1].glob('gha-creds-*'))
     assert a.expected_commit == os.environ['HEAD_SHA']
+    with open(os.environ['FAKE_CHECKS'],'a') as f:f.write('core\\n')
     Path(a.output).write_text(json.dumps({'runtime_passed':True,'target':{'url':'https://candidate.run.app'}}))
     raise SystemExit(int(os.environ.get('FAIL_CORE','0')))
 ''')
     (scripts / 'verify_live_intake.py').write_text('''
 import json,os
+with open(os.environ['FAKE_CHECKS'],'a') as f:f.write('typed\\n')
 print(json.dumps({'passed':not bool(os.environ.get('FAIL_LIVE'))}))
 raise SystemExit(int(os.environ.get('FAIL_LIVE','0')))
+''')
+    (scripts / 'verify_live_audio.py').write_text('''
+import argparse,hashlib,json,os,wave
+from pathlib import Path
+p=argparse.ArgumentParser()
+p.add_argument('--base-url');p.add_argument('--wav');p.add_argument('--timeout',type=int)
+a=p.parse_args()
+assert a.base_url == 'https://candidate.run.app' and a.timeout == 90
+fixture=Path(a.wav)
+assert fixture == Path(__file__).parents[1] / 'tests/fixtures/live-audio-check.wav'
+assert hashlib.sha256(fixture.read_bytes()).hexdigest() == os.environ['AUDIO_FIXTURE_SHA']
+with wave.open(str(fixture),'rb') as source:
+    assert (source.getnchannels(),source.getsampwidth(),source.getframerate()) == (1,2,16000)
+assert Path(os.environ['FAKE_CHECKS']).read_text().splitlines() == ['core','typed','typed']
+with open(os.environ['FAKE_CHECKS'],'a') as f:f.write('audio\\n')
+print(json.dumps({'passed':not bool(os.environ.get('FAIL_AUDIO')), 'probe':'synthetic_audio_live_v1'}))
+raise SystemExit(int(os.environ.get('FAIL_AUDIO','0')))
 ''')
     def git(*args):
         return subprocess.check_output(['git', '-C', str(root), *args], text=True).strip()
@@ -75,6 +99,7 @@ elif a[:2]==['run','deploy']:
  state.write_text(json.dumps(s))
  if os.environ.get('ADVANCE_MAIN'):subprocess.run(['git','commit','--allow-empty','-m','Newer main'],check=True,stdout=subprocess.DEVNULL)
 elif a[:3]==['run','services','update-traffic']:
+ assert Path(os.environ['FAKE_CHECKS']).read_text().splitlines()==['core','typed','typed','audio']
  s=json.loads(state.read_text());rev=option('--to-revisions').split('=')[0]
  assert rev.startswith('seattle-food-broker-g'+os.environ['HEAD_SHA'][:10]+'-')
  s['status']['traffic']=[{{'revisionName':rev,'percent':100}}];state.write_text(json.dumps(s))
@@ -88,7 +113,9 @@ else:raise SystemExit('unexpected fake gcloud command')
     }}}, 'status': {'traffic': [{'revisionName': 'old-revision', 'percent': 100}]}}))
     log = tmp_path / 'calls.jsonl'
     env = dict(os.environ, PATH=str(bin_dir)+os.pathsep+os.environ['PATH'],
-               FOOD_DEPLOY_PYTHON=sys.executable, FAKE_STATE=str(state), FAKE_LOG=str(log), HEAD_SHA=sha)
+               FOOD_DEPLOY_PYTHON=sys.executable, FAKE_STATE=str(state), FAKE_LOG=str(log), HEAD_SHA=sha,
+               FAKE_CHECKS=str(tmp_path / 'checks.log'),
+               AUDIO_FIXTURE_SHA=hashlib.sha256(FIXTURE.read_bytes()).hexdigest())
     evidence = tmp_path / 'evidence'
     def run(*args, **overrides):
         result = subprocess.run(['bash', str(scripts / SCRIPT.name), '--evidence-dir', str(evidence), *args],
@@ -103,6 +130,7 @@ def test_default_verifies_candidate_without_promoting(deployment):
     result, calls = run()
     assert result.returncode == 0, result.stderr
     assert (evidence / 'core.json').exists() and (evidence / 'live-2.json').exists()
+    assert json.loads((evidence / 'audio.json').read_text())['passed'] is True
     assert not any(c[:3] == ['run','services','update-traffic'] for c in calls)
     assert 'production traffic unchanged' in result.stdout
 
@@ -114,14 +142,18 @@ def test_ci_promotes_exact_checked_revision_only(deployment):
     promotion = [c for c in calls if c[:3] == ['run','services','update-traffic']]
     assert len(promotion) == 1 and '--to-latest' not in promotion[0]
     assert (evidence / 'promoted.json').exists()
+    assert json.loads((evidence / 'audio.json').read_text())['probe'] == 'synthetic_audio_live_v1'
 
 
-@pytest.mark.parametrize('flag', ['FAIL_CORE', 'FAIL_LIVE'])
+@pytest.mark.parametrize('flag', ['FAIL_CORE', 'FAIL_LIVE', 'FAIL_AUDIO'])
 def test_failed_candidate_check_never_promotes(deployment, flag):
-    _, run, _ = deployment
+    _, run, evidence = deployment
     result, calls = run('--promote', **{flag:'1'})
     assert result.returncode != 0
     assert not any(c[:3] == ['run','services','update-traffic'] for c in calls)
+    if flag == 'FAIL_AUDIO':
+        assert json.loads((evidence / 'audio.json').read_text())['passed'] is False
+        assert not (evidence / 'checked.json').exists()
 
 
 def test_dirty_source_stops_before_cloud(deployment):

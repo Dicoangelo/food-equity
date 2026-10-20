@@ -441,6 +441,7 @@ html { min-width: 320px; scroll-padding-top: 120px; }
 .result-state[data-state="idle"] > p:first-child { display: none; }
 #result-description { margin-top: 6px; max-width: 70ch; color: var(--secondary); font-size: 13px; line-height: 1.65; }
 #result-counts:empty, #match-status:empty, #handoff-feedback:empty { display: none; }
+#alert-intake-status:empty { display: none; }
 #result-counts { margin-top: 10px; font-size: 12px; }
 #offer-panel, #review-panel, #handoff-panel, #map-panel, #foodkeeper-panel { scroll-margin-top: 76px; }
 #offer-panel { padding: 20px; gap: 14px; }
@@ -564,6 +565,10 @@ html { min-width: 320px; scroll-padding-top: 120px; }
 #assistant-drawer #voice-panel { min-height: 0; flex: 1; overflow-y: auto; overscroll-behavior: contain; padding: 20px; border: 0; border-radius: 0; box-shadow: none; }
 #assistant-drawer #voice-panel > summary { display: none; }
 #voice-panel > p:first-of-type { margin-top: 0; font-size: 13px; color: var(--secondary); line-height: 1.7; }
+.assistant-help { margin: 8px 0 14px; border-bottom: 1px solid var(--line-soft); }
+#rescue-app .assistant-help > summary { color: var(--accent); font-size: 12px; font-weight: 600; cursor: pointer; }
+.assistant-help > p { margin: 2px 0 14px; color: var(--secondary); font-size: 12px; line-height: 1.7; }
+.assistant-help[open] { padding-bottom: 2px; }
 #voice-status { padding: 10px 12px; border: 1px solid var(--line-soft); border-radius: 7px; background: #f7f9fa; font-size: 12px; }
 #voice-panel label { font-size: 12px; font-weight: 500; color: var(--secondary); }
 #voice-text { min-height: 90px; resize: vertical; }

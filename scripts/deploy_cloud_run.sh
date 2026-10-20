@@ -92,6 +92,10 @@ candidate_url="$("$python" -c 'import json,sys; r=json.load(open(sys.argv[1])); 
 for attempt in 1 2; do
   "$python" "$workspace/scripts/verify_live_intake.py" --base-url "$candidate_url" > "$evidence_dir/live-$attempt.json"
 done
+# One synthetic speech turn must produce input transcription and owned response PCM.
+# The committed fixture comes from this exact archive; no microphone or personal audio.
+"$python" "$workspace/scripts/verify_live_audio.py" --base-url "$candidate_url" \
+  --wav "$workspace/tests/fixtures/live-audio-check.wav" --timeout 90 > "$evidence_dir/audio.json"
 snapshot_service > "$evidence_dir/checked.json"
 "$python" - "$evidence_dir/before.json" "$evidence_dir/checked.json" <<'PY'
 import json,sys

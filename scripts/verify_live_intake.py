@@ -1,5 +1,7 @@
 """Public-demo typed Live smoke. No mic, credentials, transcript logs or broker calls."""
 import argparse
+import base64
+import binascii
 import asyncio
 import json
 import math
@@ -87,11 +89,14 @@ async def probe(base_url, *, timeout=90, connector=None, now=None):
         "audio_bytes_received": 0, "transcript_events": 0, "match_request_sent": False,
     }
     connector = connector or websockets.connect
+    owner, correlated, provider_epoch = None, False, None
 
     async def receive(ws):
         for _ in range(10000):
             raw = await ws.recv()
             if isinstance(raw, bytes):
+                if correlated:
+                    raise SmokeFailure("unowned_audio")
                 report["audio_bytes_received"] += len(raw)
                 if report["audio_bytes_received"] > 10_000_000:
                     raise SmokeFailure("response_audio_limit")
@@ -108,6 +113,23 @@ async def probe(base_url, *, timeout=90, connector=None, now=None):
                          "invalid_audio", "invalid_message", "message_too_large", "invalid_text"}
                 code = event.get("code")
                 raise SmokeFailure(code if code in known else "server_error")
+            if correlated and event.get("type") in {"audio", "transcript"}:
+                if (not owner or any(event.get(k) != v for k, v in owner.items())):
+                    raise SmokeFailure("output_owner_mismatch")
+            if event.get("type") == "audio":
+                encoded = event.get("pcm")
+                if not isinstance(encoded, str) or len(encoded) > 48000:
+                    raise SmokeFailure("invalid_owned_audio")
+                try:
+                    pcm = base64.b64decode(encoded, validate=True)
+                except (ValueError, binascii.Error):
+                    raise SmokeFailure("invalid_owned_audio") from None
+                if not pcm or len(pcm) % 2:
+                    raise SmokeFailure("invalid_owned_audio")
+                report["audio_bytes_received"] += len(pcm)
+                if report["audio_bytes_received"] > 10_000_000:
+                    raise SmokeFailure("response_audio_limit")
+                continue
             if event.get("type") == "transcript":
                 report["transcript_events"] += 1
             return event
@@ -123,6 +145,10 @@ async def probe(base_url, *, timeout=90, connector=None, now=None):
                             event.get("location") != LOCATION):
                         raise SmokeFailure("unexpected_ready")
                     report["ready"] = True
+                    correlated = event.get("input_correlation") is True
+                    provider_epoch = event.get("provider_epoch")
+                    if correlated and (type(provider_epoch) is not int or provider_epoch != 1):
+                        raise SmokeFailure("unexpected_ready")
                     await ws.send(json.dumps({"type": "context", "fields": context}))
                     baseline = None
                     while True:
@@ -132,13 +158,18 @@ async def probe(base_url, *, timeout=90, connector=None, now=None):
                             baseline = event
                         if event.get("type") == "turn_complete" and baseline:
                             break
-                    await ws.send(json.dumps({"type": "text", "text": UPDATE_TEXT}))
+                    await ws.send(json.dumps({"type": "text", "text": UPDATE_TEXT,
+                                              **({"request_id": 1} if correlated else {})}))
                     owner = None
                     while True:
                         event = await receive(ws)
                         if event.get("type") == "turn_started":
+                            if correlated and (event.get("request_id") != 1 or event.get("provider_epoch") != provider_epoch):
+                                raise SmokeFailure("input_owner_mismatch")
                             owner = {key: event.get(key) for key in (
                                 "turn_id", "expected_offer_revision", "expected_view_revision")}
+                            if correlated:
+                                owner["provider_epoch"] = provider_epoch
                         if event.get("type") == "action_result" and event.get("effect") == "draft_proposed":
                             if (event.get("outcome") != "applied" or not owner
                                     or not owner.get("turn_id")
@@ -151,6 +182,8 @@ async def probe(base_url, *, timeout=90, connector=None, now=None):
                             report["draft_updated"] = True
                             report["deadline_preserved"] = True
                         if event.get("type") == "turn_complete":
+                            if correlated and (not owner or any(event.get(k) != v for k, v in owner.items())):
+                                raise SmokeFailure("completion_owner_mismatch")
                             if not report["draft_updated"]:
                                 raise SmokeFailure("model_did_not_update_draft")
                             report["response_complete"] = True
