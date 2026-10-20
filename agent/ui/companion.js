@@ -53,6 +53,9 @@
       buttons.talk.disabled=!current.canTalk;buttons.stop.hidden=!current.canStop;buttons.review.hidden=!current.canReview;
       // Keep controls within the active dialog's focus trap while retaining one dock.
       const host=drawer&&!drawer.hidden ? drawer : doc.body;
+      const profile=$('recipient-detail');
+      dock.hidden=host===doc.body&&(doc.body.classList.contains('workspace-nav-open')||
+        (profile?.getAttribute?.('aria-modal')==='true'&&!profile.hidden&&!profile.classList.contains('hidden')));
       if(dock.parentElement!==host)host.appendChild(dock);
       dock.classList.toggle('companion-in-dialog',host===drawer);
     }
@@ -60,6 +63,8 @@
     for(const id of ['voice-start','voice-stop','voice-apply','voice-review','voice-status'])
       if($(id))observer.observe($(id),{attributes:true,childList:true,subtree:true,characterData:true});
     if($('assistant-drawer'))observer.observe($('assistant-drawer'),{attributes:true,attributeFilter:['hidden']});
+    observer.observe(doc.body,{attributes:true,attributeFilter:['class']});
+    if($('recipient-detail'))observer.observe($('recipient-detail'),{attributes:true,attributeFilter:['class','hidden','aria-modal']});
     sync();
     root.addEventListener('pagehide',()=>{observer.disconnect();root.stopVoiceSession?.('Session closed.');},{once:true});
     return {sync};

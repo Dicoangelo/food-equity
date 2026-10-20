@@ -41,7 +41,7 @@ test('real initializer observes existing state and binds explicit controls witho
     constructor(){this.children=[];this.dataset={};this.attrs={};this.hidden=false;this.textContent='';this.disabled=false;this.events={};this.classes=new Set();this.classList={add:x=>this.classes.add(x),contains:x=>this.classes.has(x),toggle:(x,on)=>on?this.classes.add(x):this.classes.delete(x)};}
     set id(value){this._id=value;nodes.set(value,this);}get id(){return this._id;}
     appendChild(child){if(child.parentElement)child.parentElement.children=child.parentElement.children.filter(c=>c!==child);child.parentElement=this;this.children.push(child);return child;}
-    setAttribute(k,v){this.attrs[k]=v;}addEventListener(k,fn){this.events[k]=fn;}
+    setAttribute(k,v){this.attrs[k]=v;}getAttribute(k){return this.attrs[k];}addEventListener(k,fn){this.events[k]=fn;}
     focus(){calls.push('focus');}scrollIntoView(){calls.push('scroll');}
   }
   const make=id=>{const e=new Element();e.id=id;return e;};
@@ -55,6 +55,8 @@ test('real initializer observes existing state and binds explicit controls witho
     globalThis.startVoiceSession=value=>calls.push(['mic',value]);globalThis.stopVoiceSession=()=>calls.push('stop');globalThis.addEventListener=(name,fn)=>listeners[name]=fn;
     require('../agent/ui/companion.js').init();assert.deepEqual(calls,[],'Rendering and observing never request capture');
     const dock=nodes.get('food-companion'),buttons=dock.children[1].children[2].children;
+    globalThis.document.body.classes.add('workspace-nav-open');observer.sync();assert.equal(dock.hidden,true,'Unrelated navigation modal keeps companion controls out of its focus boundary');
+    globalThis.document.body.classes.delete('workspace-nav-open');observer.sync();assert.equal(dock.hidden,false);
     const button=action=>buttons.find(b=>b.dataset.companionAction===action);
     button('text').events.click();assert.deepEqual(calls,['open','focus']);observer.sync();assert.equal(dock.parentElement,nodes.get('assistant-drawer'));
     calls.length=0;button('talk').events.click();assert.deepEqual(calls,['open',['mic',true]]);
