@@ -364,6 +364,16 @@ def recipient_explorer_style():
     return FileResponse(Path(__file__).parent / "ui/recipient-explorer.css", media_type="text/css")
 
 
+@app.get("/ui/source-state.js", include_in_schema=False)
+def source_state_script():
+    return FileResponse(Path(__file__).parent / "ui/source-state.js", media_type="text/javascript")
+
+
+@app.get("/ui/view-context.js", include_in_schema=False)
+def view_context_script():
+    return FileResponse(Path(__file__).parent / "ui/view-context.js", media_type="text/javascript")
+
+
 @app.get("/", response_class=HTMLResponse)
 def index_dashboard():
     """Serves the full-featured interactive Map Dashboard for coordinators & team demos."""
@@ -616,17 +626,19 @@ def index_dashboard():
       </details>
 
       <details id="voice-panel" class="surface-card rounded-xl p-5 border border-line">
-        <summary class="text-sm font-semibold text-accent cursor-pointer">Talk through an offer · optional</summary>
-        <p class="text-xs text-muted mt-3">Gemini Live can help draft the offer using the visible form and its origin coordinates. Review demo assumptions first. Microphone audio is sent only after Start microphone; typed notes work without it. Review and apply the draft yourself, then run matching separately. Nothing is dispatched.</p>
+        <summary class="text-sm font-semibold text-accent cursor-pointer">Discuss an offer or result · optional</summary>
+        <p class="text-xs text-muted mt-3">Gemini Live can draft an offer or explain the current result and selected profile using the loaded display. It cannot verify current availability or rerun matching. Review demo assumptions first. Microphone audio is sent only after Start microphone; typed notes work without it. Review and apply the draft yourself, then run matching separately. Nothing is dispatched.</p>
         <p id="voice-status" role="status" aria-live="polite" class="text-xs text-secondary mt-3">Checking whether live intake is available…</p>
         <div class="result-actions">
           <button id="voice-start" type="button" class="action-secondary" disabled onclick="startVoiceSession(true)">Start microphone</button>
           <button id="voice-stop" type="button" class="action-secondary" disabled onclick="stopVoiceSession()">Stop session</button>
         </div>
-        <label for="voice-text" class="block text-xs text-secondary mt-3 mb-1">Or type a note to the intake agent</label>
-        <textarea id="voice-text" rows="2" maxlength="4000" disabled placeholder="For example: the pickup deadline is 5 pm today, Seattle time." class="w-full surface-field border border-line rounded-lg px-3 py-2 text-sm text-ink"></textarea>
+        <label for="voice-text" class="block text-xs text-secondary mt-3 mb-1">Or ask about the current view</label>
+        <textarea id="voice-text" rows="2" maxlength="4000" disabled placeholder="Why this recipient? What needs confirmation? What are the current alternatives?" class="w-full surface-field border border-line rounded-lg px-3 py-2 text-sm text-ink"></textarea>
         <button id="voice-send" type="button" class="action-secondary mt-2" disabled onclick="sendVoiceText()">Send note</button>
+        <p class="text-xs text-muted mt-3">Conversation text is model commentary. The action receipt below confirms whether a draft proposal or a display-only read actually completed.</p>
         <div id="voice-transcript" class="voice-transcript text-xs text-secondary mt-3" aria-label="Session transcript"></div>
+        <div id="voice-action-receipt" class="text-xs text-secondary mt-3" role="status" aria-live="polite"></div>
         <div id="voice-review" class="hidden border-t border-line mt-3 pt-3">
           <h3 class="text-sm font-semibold text-ink">Review proposed offer fields</h3>
           <div id="voice-draft" class="voice-draft text-xs text-secondary mt-2"></div>
@@ -796,14 +808,14 @@ def index_dashboard():
         <div id="map-controls" class="flex flex-wrap gap-3 items-center text-xs surface-inset p-3 rounded-lg">
           <button id="btn-city" onclick="loadCityData()" class="action-secondary">Load city data</button>
           <button id="fit-recipient-view" onclick="fitRecipientView()" class="action-secondary">Fit visible profiles</button>
-          <label class="flex items-center gap-1"><input id="show-need" type="checkbox" checked onchange="renderCityLayers()"> Census need heatmap</label>
-          <label class="flex items-center gap-1"><input id="show-recipients" type="checkbox" checked onchange="renderCityLayers()"> Recipient capabilities</label>
+          <label class="flex items-center gap-1"><input id="show-need" type="checkbox" checked onchange="viewFiltersChanged()"> Census need heatmap</label>
+          <label class="flex items-center gap-1"><input id="show-recipients" type="checkbox" checked onchange="viewFiltersChanged()"> Recipient capabilities</label>
           <label for="heat-metric">Need indicator</label>
-          <select id="heat-metric" onchange="renderCityLayers()" class="surface-card border border-control rounded px-2 py-1">
+          <select id="heat-metric" onchange="viewFiltersChanged()" class="surface-card border border-control rounded px-2 py-1">
             <option value="need_score">Combined need</option><option value="poverty_rate">Poverty rate</option><option value="no_vehicle_rate">No-vehicle household rate</option>
           </select>
           <label for="capability-filter">Storage</label>
-          <select id="capability-filter" onchange="renderCityLayers()" class="surface-card border border-control rounded px-2 py-1">
+          <select id="capability-filter" onchange="viewFiltersChanged()" class="surface-card border border-control rounded px-2 py-1">
             <option value="all">All profiles</option><option value="cold">Cold storage</option><option value="frozen">Freezer</option><option value="ambient">Ambient / dry</option>
           </select>
         </div>
@@ -814,11 +826,11 @@ def index_dashboard():
           <div id="map" aria-label="Seattle approximate recipient and census locations"></div>
           <section class="recipient-directory" aria-label="Recipient directory">
             <label for="recipient-search">Find a recipient</label>
-            <input id="recipient-search" type="search" placeholder="Organization or city" oninput="renderCityLayers()" autocomplete="off">
+            <input id="recipient-search" maxlength="100" type="search" placeholder="Organization or city" oninput="viewFiltersChanged()" autocomplete="off">
             <div class="recipient-filters">
               <div>
                 <label for="outcome-filter">Offer decision</label>
-                <select id="outcome-filter" onchange="renderCityLayers()">
+                <select id="outcome-filter" onchange="viewFiltersChanged()">
                   <option value="all">All decisions</option>
                   <option value="eligible">Eligible proposals</option>
                   <option value="needs_confirmation">Needs confirmation</option>
@@ -828,7 +840,7 @@ def index_dashboard():
               </div>
               <div>
                 <label for="provenance-filter">Profile source</label>
-                <select id="provenance-filter" onchange="renderCityLayers()">
+                <select id="provenance-filter" onchange="viewFiltersChanged()">
                   <option value="all">All sources</option>
                   <option value="generated">Generated operations</option>
                   <option value="planted">Invented teaching case</option>
@@ -847,6 +859,7 @@ def index_dashboard():
         </div>
         <p class="text-xs text-muted">Unevaluated capability points: purple = freezer · blue = refrigeration · gray = other/unknown. An outlined marker is selected. These are dataset profiles, not live availability.</p>
         <p id="city-provenance" class="text-xs text-muted">Sources have not been loaded.</p>
+        <div id="source-state-summary" class="surface-inset p-3 rounded-lg" aria-label="Evidence source status"></div>
         <details class="text-xs text-muted"><summary class="cursor-pointer">Sources and limits of this map</summary><div id="city-caveats"></div><pre id="city-source-details" class="whitespace-pre-wrap break-words mt-2"></pre></details>
         <p id="route-status" class="text-xs text-warning">Routing unavailable — no verified road route has been returned. Any dashed line is an illustrative straight-line connection.</p>
         <a id="external-directions" class="hidden text-sm text-accent underline" target="_blank" rel="noopener noreferrer">Open directions in Google Maps (approximate endpoints; verify the address)</a>
@@ -944,6 +957,7 @@ def index_dashboard():
       currentPayload = null;
       resetMatchProgress(false);
       refreshDeadlineDisplay();
+      if (typeof ViewContext !== 'undefined') ViewContext.changed('offer');
       document.getElementById('brief-container').classList.add('hidden');
       document.getElementById('run-evidence').classList.add('hidden');
       document.getElementById('external-directions').classList.add('hidden');
@@ -963,8 +977,14 @@ def index_dashboard():
     // Voice intake is a bounded drafting session. Only runMatching calls the broker.
     const voice = {enabled:false, config:null, socket:null, starting:false, ready:false, generation:0,
       stream:null, inputContext:null, outputContext:null, source:null, worklet:null, workletURL:null,
-      playback:new Set(), nextPlayback:0, timer:null, resolveReady:null, draft:null, draftId:null, draftVersion:-1, transcript:[], sentBytes:0};
+      playback:new Set(), nextPlayback:0, timer:null, viewTimer:null, resolveReady:null, initialDraftSeen:false,
+      draft:null, draftId:null, draftVersion:-1, transcript:[], sentBytes:0};
     function voiceStatus(message) { document.getElementById('voice-status').textContent = message; }
+    function flushVoiceView() {
+      if (voice.viewTimer) { clearTimeout(voice.viewTimer); voice.viewTimer = null; }
+      if (typeof ViewContext !== 'undefined' && voice.ready && voice.socket?.readyState === 1)
+        voice.socket.send(JSON.stringify({type:'view_context',context:ViewContext.snapshot()}));
+    }
     function voiceDraftErrors(draft) {
       const f = draft?.fields || {}, errors = [];
       if (typeof f.donor_name !== 'string' || !f.donor_name.trim() || f.donor_name.length > 200) errors.push('donor name');
@@ -982,7 +1002,8 @@ def index_dashboard():
       const available = voice.enabled && !matchInFlight;
       document.getElementById('voice-start').disabled = !available || !!voice.socket || voice.starting;
       document.getElementById('voice-stop').disabled = !voice.socket && !voice.starting;
-      document.getElementById('voice-send').disabled = !available || voice.starting;
+      document.getElementById('voice-send').disabled = !available || voice.starting
+        || (typeof ViewActionReceipts !== 'undefined' && ViewActionReceipts.busy());
       document.getElementById('voice-text').disabled = !available;
       document.getElementById('voice-apply').disabled = matchInFlight || !voice.draft?.ready_for_review
         || voiceDraftErrors(voice.draft).length > 0;
@@ -1023,8 +1044,8 @@ def index_dashboard():
       return fields;
     }
     function renderVoiceDraft(message) {
-      if (typeof message.draft_id !== 'string' || !Number.isInteger(message.draft_version) || message.draft_version < 0) return;
-      if ((voice.draftId && voice.draftId !== message.draft_id) || message.draft_version <= voice.draftVersion) return;
+      if (!message || typeof message.draft_id !== 'string' || !Number.isInteger(message.draft_version) || message.draft_version < 0) return false;
+      if ((voice.draftId && voice.draftId !== message.draft_id) || message.draft_version <= voice.draftVersion) return false;
       voice.draftId = message.draft_id;
       voice.draftVersion = message.draft_version;
       voice.draft = message;
@@ -1044,6 +1065,7 @@ def index_dashboard():
         : `Still needs confirmation: ${[...new Set([...missing,...errors])].join(', ') || 'the intake agent has not completed this draft'}.`;
       document.getElementById('voice-review').classList.remove('hidden');
       refreshVoiceControls();
+      return true;
     }
     function appendVoiceTranscript(message) {
       if (!['user','model'].includes(message.role) || typeof message.text !== 'string') return;
@@ -1080,6 +1102,8 @@ def index_dashboard():
       voice.starting = false;
       voice.ready = false;
       if (voice.timer) { clearTimeout(voice.timer); voice.timer = null; }
+      if (voice.viewTimer) { clearTimeout(voice.viewTimer); voice.viewTimer = null; }
+      if (typeof ViewActionReceipts !== 'undefined') ViewActionReceipts.reset();
       if (voice.resolveReady) { voice.resolveReady(false); voice.resolveReady = null; }
       const socket = voice.socket;
       voice.socket = null;
@@ -1145,6 +1169,7 @@ def index_dashboard():
       voice.source = ctx.createMediaStreamSource(stream);
       voice.worklet.port.onmessage = event => {
         if (generation !== voice.generation || !voice.ready || voice.socket?.readyState !== 1) return;
+        if (voice.viewTimer) flushVoiceView();
         const bytes = event.data.byteLength;
         if (voice.socket.bufferedAmount > 262144 || voice.sentBytes + bytes > 10000000) {
           stopVoiceSession('Audio upload reached its limit or the network fell behind. Review the draft or start a new session.'); return;
@@ -1163,6 +1188,7 @@ def index_dashboard():
       voice.draft = null;
       voice.draftId = null;
       voice.draftVersion = -1;
+      voice.initialDraftSeen = false;
       voice.transcript = [];
       voice.sentBytes = 0;
       document.getElementById('voice-transcript').replaceChildren();
@@ -1183,12 +1209,16 @@ def index_dashboard():
         voice.timer = setTimeout(()=>stopVoiceSession('Live intake did not connect. Use the form or try again.'),20000);
         socket.onmessage = event => {
           if (generation !== voice.generation) return;
-          if (event.data instanceof ArrayBuffer) { playVoiceAudio(event.data); return; }
+          if (event.data instanceof ArrayBuffer) {
+            if (typeof ViewActionReceipts === 'undefined' || ViewActionReceipts.current()) playVoiceAudio(event.data);
+            return;
+          }
           if (typeof event.data !== 'string' || event.data.length > 65536) return;
           let message;
           try { message = JSON.parse(event.data); } catch (_) { return; }
           if (!message || typeof message !== 'object') return;
           if (message.type === 'ready' && !voice.ready) {
+            if (typeof ViewContext !== 'undefined') socket.send(JSON.stringify({type:'view_context',context:ViewContext.snapshot()}));
             socket.send(JSON.stringify({type:'context',fields:voiceFormContext()}));
             voice.ready = true;
             voice.starting = false;
@@ -1197,11 +1227,31 @@ def index_dashboard():
             voice.resolveReady?.(true); voice.resolveReady = null;
             voiceStatus('Connected. Send a note or speak when the microphone is on.');
             refreshVoiceControls();
-          } else if (message.type === 'draft') renderVoiceDraft(message);
-          else if (message.type === 'transcript') appendVoiceTranscript(message);
-          else if (message.type === 'interrupted') flushVoicePlayback();
-          else if (message.type === 'turn_complete') voice.transcript.forEach(item=>{item.final=true;});
-          else if (message.type === 'status') voiceStatus(String(message.message || 'Live intake connected.').slice(0,1000));
+          } else if (message.type === 'view_context_ack') {
+            if (message.status !== 'accepted') stopVoiceSession('The view snapshot was refused. Review the current view and restart intake.');
+          } else if (message.type === 'turn_started' && typeof ViewActionReceipts !== 'undefined') {
+            if (!ViewActionReceipts.begin(message)) stopVoiceSession('A response belonged to an older view. Restart intake from the current view.');
+            refreshVoiceControls();
+          } else if (message.type === 'action_result' && typeof ViewActionReceipts !== 'undefined') {
+            ViewActionReceipts.accept(message);
+            refreshVoiceControls();
+          } else if (message.type === 'draft') {
+            if (typeof ViewActionReceipts === 'undefined' || (!voice.initialDraftSeen && !ViewActionReceipts.current())) {
+              voice.initialDraftSeen = true; renderVoiceDraft(message);
+            }
+          } else if (message.type === 'transcript') {
+            if (typeof ViewActionReceipts === 'undefined' || ViewActionReceipts.owns(message)) appendVoiceTranscript(message);
+          } else if (message.type === 'interrupted') {
+            if (typeof ViewActionReceipts === 'undefined') flushVoicePlayback();
+            else stopVoiceSession('The turn was interrupted. Restart intake so its actions belong to the current view.');
+          } else if (message.type === 'turn_complete') {
+            if (typeof ViewActionReceipts === 'undefined' || ViewActionReceipts.finish(message)) {
+              voice.transcript.forEach(item=>{item.final=true;}); refreshVoiceControls();
+            }
+          } else if (message.type === 'status') {
+            if (typeof ViewActionReceipts === 'undefined' || !ViewActionReceipts.busy() || ViewActionReceipts.owns(message))
+              voiceStatus(String(message.message || 'Live intake connected.').slice(0,1000));
+          }
           else if (message.type === 'error') stopVoiceSession(String(message.message || 'Live intake is unavailable. Use the offer form.').slice(0,1000));
         };
         socket.onerror = () => { if (generation === voice.generation) stopVoiceSession('Live intake could not connect. Check app access or continue with the form.'); };
@@ -1224,9 +1274,13 @@ def index_dashboard():
     async function sendVoiceText() {
       const input = document.getElementById('voice-text'), text = input.value.trim();
       if (!voice.enabled || matchInFlight || voice.starting || !text || text.length > 4000) return;
+      if (typeof ViewActionReceipts !== 'undefined' && ViewActionReceipts.busy()) return;
       const ready = voice.ready || await startVoiceSession(false);
       if (!ready || voice.socket?.readyState !== 1) return;
+      flushVoiceView();
+      if (typeof ViewActionReceipts !== 'undefined') ViewActionReceipts.expectTurn();
       voice.socket.send(JSON.stringify({type:'text',text}));
+      refreshVoiceControls();
       input.value = '';
       voiceStatus('Note sent. Review the intake agent’s draft before applying it.');
     }
@@ -1265,6 +1319,7 @@ def index_dashboard():
         return;
       }
       map = L.map('map').setView([47.6062, -122.3321], 11);
+      map.on?.('moveend', () => { if (typeof ViewContext !== 'undefined') ViewContext.changed(); });
       // Standard interactive OSM tiles use normal browser Referer and HTTP caching.
       // No prefetch, offline downloads, cache-busting parameters or API keys.
       const tiles = L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
@@ -1328,6 +1383,7 @@ def index_dashboard():
         const data = await response.json();
         if (!response.ok || !['ready','success','ok','partial'].includes(data.status)) throw new Error(data.message || 'City dataset is not ready.');
         cityPayload = data;
+        if (typeof ViewContext !== 'undefined') ViewContext.changed('sources');
         renderCityLayers();
         document.getElementById('city-provenance').textContent = `Seattle aggregate data · retrieved ${data.as_of || 'time not supplied'}. Operational profiles require recipient confirmation; point locations are approximate.`;
         document.getElementById('city-source-details').textContent = JSON.stringify({provenance:data.provenance,limits:data.limits},null,2);
@@ -1336,6 +1392,7 @@ def index_dashboard():
         (data.warnings || []).forEach(warning => caveats.appendChild(textNode('p',warning)));
       } catch (error) {
         cityPayload = null;
+        if (typeof ViewContext !== 'undefined') ViewContext.changed('sources');
         if (cityRecipientLayer) cityRecipientLayer.clearLayers();
         if (tractPointLayer) tractPointLayer.clearLayers();
         if (heatLayer && map) { map.removeLayer(heatLayer); heatLayer = null; }
@@ -1343,6 +1400,10 @@ def index_dashboard():
         document.getElementById('city-provenance').textContent = 'No city data displayed. No heat values or recipient capabilities were fabricated.';
         renderCityLayers();
       } finally { btn.disabled = false; }
+    }
+    function viewFiltersChanged() {
+      if (typeof ViewContext !== 'undefined') ViewContext.changed();
+      renderCityLayers();
     }
     function renderCityLayers() {
       if (typeof RecipientExplorer !== 'undefined') RecipientExplorer.refresh();
@@ -1653,6 +1714,7 @@ def index_dashboard():
       document.getElementById('decoys-list').replaceChildren(textNode('p','Candidate checks are in progress for this offer.'));
       currentPayload = null;
       if (markersLayer) markersLayer.clearLayers();
+      if (typeof ViewContext !== 'undefined') ViewContext.changed('clear_result');
       renderCityLayers();
       setStatus('Checking semantic candidates, storage, capacity and the same pickup deadline…');
       reviewState('loading','Checking this offer','The live broker is retrieving candidates and checking feasibility. The offer is locked until this request finishes.');
@@ -1735,6 +1797,7 @@ def index_dashboard():
     }
     function renderResults(data) {
       currentPayload = data;
+      if (typeof ViewContext !== 'undefined') ViewContext.changed('result');
       renderCityLayers();
       document.getElementById('handoff-feedback').textContent = '';
       if (markersLayer) markersLayer.clearLayers();
@@ -1865,7 +1928,21 @@ def index_dashboard():
       catch (_) { setStatus('Clipboard unavailable. Select and copy the JSON manually.', true); }
     }
     window.onload = () => {
+      if (typeof ViewContext !== 'undefined') ViewContext.onChange(() => {
+        if (!voice.ready || voice.socket?.readyState !== 1) return;
+        if (ViewActionReceipts.busy()) {
+          stopVoiceSession('The displayed view changed during the turn. Restart intake to use the updated evidence.');
+          return;
+        }
+        if (voice.viewTimer) clearTimeout(voice.viewTimer);
+        const generation = voice.generation;
+        voice.viewTimer = setTimeout(() => {
+          if (generation === voice.generation && voice.ready && voice.socket?.readyState === 1)
+            flushVoiceView();
+        }, 80);
+      });
       initMap();
+      if (typeof ViewContext !== 'undefined') ViewContext.start();
       loadScenarios();
       loadCityData();
       loadVoiceConfig();
@@ -1879,8 +1956,11 @@ def index_dashboard():
       deadlineTicker = null;
       cancelMatching();
       stopVoiceSession('Session closed.');
+      if (typeof ViewContext !== 'undefined') ViewContext.dispose();
     });
   </script>
+  <script src="/ui/source-state.js"></script>
+  <script src="/ui/view-context.js"></script>
   <script src="/ui/recipient-explorer.js"></script>
 
 </body>

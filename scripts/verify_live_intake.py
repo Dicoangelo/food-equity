@@ -83,6 +83,7 @@ async def probe(base_url, *, timeout=90, connector=None, now=None):
         "probe": "typed_live_draft_v1", "service_origin": origin, "started_at": now.isoformat(),
         "model": MODEL, "location": LOCATION, "passed": False, "ready": False,
         "draft_updated": False, "deadline_preserved": False, "response_complete": False,
+        "action_ownership_verified": False,
         "audio_bytes_received": 0, "transcript_events": 0, "match_request_sent": False,
     }
     connector = connector or websockets.connect
@@ -132,8 +133,19 @@ async def probe(base_url, *, timeout=90, connector=None, now=None):
                         if event.get("type") == "turn_complete" and baseline:
                             break
                     await ws.send(json.dumps({"type": "text", "text": UPDATE_TEXT}))
+                    owner = None
                     while True:
                         event = await receive(ws)
+                        if event.get("type") == "turn_started":
+                            owner = {key: event.get(key) for key in (
+                                "turn_id", "expected_offer_revision", "expected_view_revision")}
+                        if event.get("type") == "action_result" and event.get("effect") == "draft_proposed":
+                            if (event.get("outcome") != "applied" or not owner
+                                    or not owner.get("turn_id")
+                                    or any(event.get(key) != value for key, value in owner.items())):
+                                raise SmokeFailure("action_owner_mismatch")
+                            event = event.get("payload", {}).get("draft", {})
+                            report["action_ownership_verified"] = True
                         if event.get("type") == "draft":
                             assert_draft(event, deadline, 2, previous=baseline)
                             report["draft_updated"] = True

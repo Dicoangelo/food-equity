@@ -235,6 +235,9 @@ const RecipientExplorer = (() => {
     badges.appendChild(badge(row.geography_precision === 'zip_centroid' ? 'Approximate ZIP centroid' : 'Location precision unverified'));
     badges.appendChild(badge('Availability unknown'));
     container.appendChild(badges);
+    if (typeof ViewContext !== 'undefined') {
+      container.appendChild(textNode('p', SourceStateUI.describe(ViewContext.recipientSource(row)), 'recipient-note'));
+    }
     container.appendChild(textNode('p', row.profile_source === 'planted'
       ? 'This organization and its operating profile are invented for the teaching dataset.'
       : row.profile_source === 'generated'
@@ -536,6 +539,7 @@ const RecipientExplorer = (() => {
     returnFocusRegion = $('recipient-compare')?.contains?.(returnFocus) ? 'compare' : 'list';
     const panel = $('recipient-detail');
     panel.classList.remove('hidden');
+    if (typeof ViewContext !== 'undefined') ViewContext.changed();
     refresh();
     const row = mergedRecipients().find(item => item.recipient_id === id);
     const point = cityPoint(row);
@@ -546,6 +550,7 @@ const RecipientExplorer = (() => {
     const previousId = selected;
     stopEvidenceRead();
     selected = null;
+    if (typeof ViewContext !== 'undefined') ViewContext.changed();
     $('recipient-detail')?.classList.add('hidden');
     updateModal();
     renderList();

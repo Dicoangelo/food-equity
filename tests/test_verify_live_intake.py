@@ -105,3 +105,27 @@ def test_endpoint_rejects_cleartext_public_hosts_and_embedded_secrets(value):
 def test_localhost_probe_is_supported():
     assert endpoints("http://127.0.0.1:8080/") == (
         "http://127.0.0.1:8080", "ws://127.0.0.1:8080/api/live/intake")
+
+
+class OwnedSocket(Socket):
+    async def send(self,text):
+        event=json.loads(text)
+        if event['type']!='text':return await super().send(text)
+        self.sent.append(event)
+        self.fields['pallet_count']=2
+        owner={'turn_id':'turn-current','expected_offer_revision':0,'expected_view_revision':0}
+        await self.events.put(json.dumps({'type':'turn_started',**owner}))
+        await self.events.put(json.dumps({'type':'action_result','effect':'draft_proposed','outcome':'applied',
+            **{**owner,'turn_id':'turn-old' if self.mode=='wrong_owner' else owner['turn_id']},
+            'payload':{'draft':self.snapshot(2)}}))
+        await self.events.put(json.dumps({'type':'turn_complete',**owner}))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('mode', ['success','wrong_owner'])
+async def test_owned_action_receipt_is_required_before_accepting_proposal(mode):
+    socket=OwnedSocket(mode)
+    report=await probe('https://demo.run.app',connector=connection(socket,{}),now=NOW)
+    assert report['passed'] is (mode=='success')
+    if mode=='success':assert report['action_ownership_verified']
+    else:assert report['error_code']=='action_owner_mismatch'
