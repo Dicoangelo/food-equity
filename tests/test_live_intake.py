@@ -143,6 +143,51 @@ def test_evidence_must_be_latest_input_and_context_is_one_time():
     assert draft.values == {"donor_lat": 47.6, "donor_lon": -122.3}
 
 
+def test_sparse_quantity_patch_repairs_copied_context_hours_without_changing_deadline():
+    clock = [NOW]
+    draft = live.Draft(now=lambda: clock[0])
+    before = draft.context(complete_context())
+    clock[0] += timedelta(minutes=5)
+    draft.text("I have two pallets. Keep the existing pickup deadline unchanged.")
+    with pytest.raises(live.DraftRejected) as rejected:
+        draft.update({"pallet_count": 2, "hours_remaining": 6, "evidence": draft.latest_text})
+    assert rejected.value.code == "pickup_hours_not_explicit"
+    assert rejected.value.field == "hours_remaining"
+    assert draft.version == before["draft_version"]
+    assert draft.snapshot()["fields"]["pallet_count"] == 1
+    after = draft.update({"pallet_count": 2, "evidence": "I have two pallets"})
+    assert after["fields"]["pallet_count"] == 2
+    assert after["fields"]["deadline_at"] == before["fields"]["deadline_at"]
+    assert after["draft_version"] == before["draft_version"] + 1
+
+
+@pytest.mark.parametrize("text,patch,code,field", [
+    ("Two pallets", {"evidence": "One pallet", "pallet_count": 1},
+     "evidence_not_current", "evidence"),
+    ("Two crates", {"evidence": "Two crates", "pallet_count": 2},
+     "pallet_quantity_not_explicit", "pallet_count"),
+    ("I have two pallets", {"evidence": "I have two pallets", "hours_remaining": 6},
+     "pickup_hours_not_explicit", "hours_remaining"),
+    ("Six hours to expiry", {"evidence": "Six hours to expiry", "hours_remaining": 6},
+     "pickup_window_not_confirmed", "hours_remaining"),
+    ("We have eight hours for pickup",
+     {"evidence": "We have eight hours for pickup", "hours_remaining": 8, "replace_deadline": True},
+     "deadline_correction_not_explicit", "replace_deadline"),
+    ("Two pallets", {"evidence": "Two pallets", "pallet_count": "PRIVATE_VALIDATION_INPUT"},
+     "invalid_patch", None),
+])
+def test_rejection_feedback_is_static_and_field_specific(text, patch, code, field):
+    draft = live.Draft(now=lambda: NOW)
+    before = draft.context(complete_context())
+    draft.text(text)
+    with pytest.raises(live.DraftRejected) as rejected:
+        draft.update(patch)
+    assert rejected.value.code == code and rejected.value.field == field
+    assert str(rejected.value) == live.REJECTION_REASONS[code][1]
+    assert "PRIVATE_VALIDATION_INPUT" not in str(rejected.value)
+    assert draft.snapshot() == before
+
+
 def test_expired_snapshot_cannot_be_applied():
     clock = [NOW]
     draft = live.Draft(now=lambda: clock[0])
@@ -263,6 +308,45 @@ async def test_transport_tool_draft_pcm_transcript_and_cleanup():
     assert not client.session.receiving
     assert client.session.audio[0]["audio"].mime_type == "audio/pcm;rate=16000"
     assert client.session.responses[0]["function_responses"][0].id == "draft-1"
+
+
+@pytest.mark.asyncio
+async def test_transport_returns_specific_repair_then_accepts_sparse_patch():
+    from google.genai import types
+    ws, client = FakeWebSocket(), FakeClient()
+    task = asyncio.create_task(live.serve(ws, live.Settings(enabled=True), lambda _: client))
+    await next_output(ws)
+    await ws.send({"type": "context", "fields": complete_context()})
+    before = await next_output(ws)
+    await ws.send({"type": "text", "text": "I have two pallets. Keep the existing pickup deadline."})
+    for _ in range(50):
+        if len(client.session.texts) == 2:
+            break
+        await asyncio.sleep(.001)
+    async def tool(args, identity):
+        await client.session.events.put(types.LiveServerMessage(tool_call=types.LiveServerToolCall(
+            function_calls=[types.FunctionCall(id=identity, name="draft_offer", args=args)])))
+        return await next_output(ws)
+    rejected = await tool({"pallet_count": 2, "hours_remaining": 6,
+                           "evidence": "I have two pallets"}, "rejected")
+    assert rejected["type"] == "status"
+    assert rejected["code"] == "pickup_hours_not_explicit"
+    assert rejected["field"] == "hours_remaining"
+    for _ in range(50):
+        if client.session.responses:
+            break
+        await asyncio.sleep(.001)
+    response = client.session.responses[0]["function_responses"][0].response
+    assert response["accepted"] is False
+    assert response["code"] == rejected["code"]
+    assert response["message"] == rejected["message"]
+    repaired = await tool({"pallet_count": 2, "evidence": "I have two pallets"}, "repaired")
+    assert repaired["fields"]["pallet_count"] == 2
+    assert repaired["fields"]["deadline_at"] == before["fields"]["deadline_at"]
+    assert repaired["draft_version"] == before["draft_version"] + 1
+    await ws.send({"type": "stop"})
+    await asyncio.wait_for(task, 1)
+    assert client.closed and client.context_closed and ws.closed
 
 
 @pytest.mark.asyncio

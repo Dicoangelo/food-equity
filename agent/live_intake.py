@@ -18,7 +18,7 @@ from urllib.parse import urlsplit
 from uuid import uuid4
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 router = APIRouter()
 MAX_JSON_BYTES = 16_384
@@ -107,12 +107,49 @@ class ToolPatch(BaseModel):
     posting_text: str | None = Field(None, min_length=5, max_length=4000)
     donor_name: str | None = Field(None, min_length=1, max_length=200)
     required_storage: Literal["cold", "ambient", "frozen"] | None = None
-    pallet_count: float | None = Field(None, gt=0, le=10000)
-    hours_remaining: float | None = Field(None, gt=0, le=168)
-    evidence: str = Field(min_length=1, max_length=4000)
+    pallet_count: float | None = Field(
+        None, gt=0, le=10000,
+        description="Changed pallet count only. Evidence must quote the declared number AND pallet unit.")
+    hours_remaining: float | None = Field(
+        None, gt=0, le=168,
+        description="Omit unless the latest user input explicitly declares a pickup window in hours. "
+                    "Never copy remaining hours from form context or recompute an unchanged deadline.")
+    evidence: str = Field(
+        min_length=1, max_length=4000,
+        description="Exact continuous quote from the latest user input supporting every supplied field. "
+                    "For quantity/window include the number and its unit.")
     replace_deadline: bool = False
 
     _finite = field_validator("pallet_count", "hours_remaining", mode="before")(Fields.finite_number.__func__)
+
+
+REJECTION_REASONS = {
+    "invalid_patch": (None, "Draft not applied. Use only supported draft fields with valid types. "
+                     "Send a sparse patch, omitting unchanged form values."),
+    "unsupported_tool": (None, "Draft not applied. Only draft_offer is available; no external action is allowed."),
+    "evidence_not_current": ("evidence", "Draft not applied. Quote the latest user's exact words as evidence, "
+                            "not form context or a paraphrase. Include only fields that quote supports."),
+    "pallet_quantity_not_explicit": ("pallet_count", "Draft not applied. Quote both the pallet number and "
+                                    "pallet unit from the latest user input. Never convert other units; "
+                                    "omit pallet_count if it was not explicitly declared."),
+    "pickup_hours_not_explicit": ("hours_remaining", "Draft not applied. Omit hours_remaining when the user "
+                                  "did not explicitly state a pickup window in hours. Keep the current "
+                                  "deadline and retry only the supported changed fields."),
+    "pickup_window_not_confirmed": ("hours_remaining", "Draft not applied. Confirm a pickup window in hours; "
+                                   "expiry or shelf-life is not a pickup window. Omit hours_remaining "
+                                   "until the user explicitly supplies that window."),
+    "deadline_correction_not_explicit": ("replace_deadline", "Draft not applied. Extending the deadline "
+                                        "requires an explicit user correction. Omit hours_remaining "
+                                        "and replace_deadline when the deadline is unchanged."),
+}
+
+
+class DraftRejected(ValueError):
+    """Static repair feedback only: never return Pydantic input or provider content."""
+    def __init__(self, code):
+        self.code = code
+        self.field, message = REJECTION_REASONS[code]
+        super().__init__(message)
 
 
 NUMBER_WORDS = {"a": 1, "an": 1, "one": 1, "two": 2, "three": 3, "four": 4,
@@ -207,24 +244,27 @@ class Draft:
         self.audio_transcript, self.audio_started_at = "", None
 
     def update(self, raw):
-        patch = ToolPatch.model_validate(raw)
+        try:
+            patch = ToolPatch.model_validate(raw)
+        except ValidationError:
+            raise DraftRejected("invalid_patch") from None
         evidence = normalized(patch.evidence)
         if not self.latest_text or evidence not in normalized(self.latest_text):
-            raise ValueError("Draft evidence must quote the current user's input")
+            raise DraftRejected("evidence_not_current")
         changes = patch.model_dump(exclude_none=True, exclude={"evidence", "replace_deadline"})
         hours = changes.pop("hours_remaining", None)
         quantity = changes.get("pallet_count")
         if quantity is not None and not explicit_amount(evidence, quantity, "pallets?"):
-            raise ValueError("Pallet quantity needs an explicit pallet declaration; no conversion")
+            raise DraftRejected("pallet_quantity_not_explicit")
         changed_deadline = False
         next_deadline = self.deadline
         if hours is not None:
             if not explicit_amount(evidence, hours, "(?:hours?|hrs?)"):
-                raise ValueError("Pickup window needs an explicit hours declaration")
+                raise DraftRejected("pickup_hours_not_explicit")
             # Do not interpret a sell-by/expiry duration as a pickup window.
             if (not re.search(r"\b(?:pickup|pick up|collect|collection|move|available|window|within|have)\b", evidence)
                     or re.search(r"\b(?:expir\w*|sell[- ]by|shelf[- ]life|code date)\b", evidence)):
-                raise ValueError("Confirm that the declared hours are the pickup window")
+                raise DraftRejected("pickup_window_not_confirmed")
             proposed_deadline = (self.latest_at or self.now()) + timedelta(hours=hours)
             if next_deadline is None:
                 next_deadline = proposed_deadline
@@ -234,7 +274,7 @@ class Draft:
                 changed_deadline = True
             elif patch.replace_deadline:
                 if not re.search(r"\b(?:actually|instead|change|changed|correction|new|make it|update)\b", evidence):
-                    raise ValueError("A deadline replacement requires an explicit user correction")
+                    raise DraftRejected("deadline_correction_not_explicit")
                 next_deadline = proposed_deadline
                 changed_deadline = True
             # Repeated model calls cannot extend the existing clock.
@@ -289,7 +329,14 @@ def connect_config():
             "You help a Seattle food-rescue coordinator capture a surplus offer. Ask short questions "
             "for missing product, donor, explicit pallet quantity, storage, pickup window and location. "
             "Use draft_offer only to propose fields grounded in the latest user's exact words. "
-            "The evidence argument must quote that input. Never convert crates, cases, pounds or loaves "
+            "It is a sparse PATCH, not a full form: send only changed fields and evidence; omit ALL "
+            "unchanged context values. In particular omit hours_remaining and replace_deadline when "
+            "the user keeps the existing pickup deadline. Never copy context hours into a tool call. "
+            "The evidence argument must be an exact continuous quote from that input and include the "
+            "number AND unit for each quantity/window. For 'I have two pallets' with the same deadline, "
+            'call draft_offer with only {"pallet_count":2,"evidence":"I have two pallets"}. '
+            "If a tool rejects a field, follow its repair message and retry the supported sparse patch; "
+            "never claim the draft changed unless accepted is true. Never convert crates, cases, pounds or loaves "
             "to pallets; ask the coordinator to enter a pallet estimate. Coordinates come from the form. "
             "Do not infer a pickup window from expiry or shelf-life. A repeated window must not reset "
             "the clock; set replace_deadline only for an explicit user correction. Unknowns stay unknown. "
@@ -299,7 +346,8 @@ def connect_config():
             "The existing Review and run button alone starts matching."
         ),
         tools=[types.Tool(function_declarations=[types.FunctionDeclaration(
-            name="draft_offer", description="Propose grounded draft fields only; no external action.",
+            name="draft_offer", description="Propose a sparse patch of changed draft fields plus exact quoted "
+                                           "evidence. Omit unchanged values, especially pickup hours. No external action.",
             parameters_json_schema=schema,
         )])],
     )
@@ -421,15 +469,17 @@ async def serve(websocket, config, client_factory=create_client):
                             raise ProtocolError("tool_limit")
                         try:
                             if call.name != "draft_offer":
-                                raise ValueError("Unsupported tool")
+                                raise DraftRejected("unsupported_tool")
                             snapshot = draft.update(call.args)
                             await emit(snapshot)
                             result = {"accepted": True, **snapshot}
-                        except (ValueError, TypeError):
-                            result = {"accepted": False, "message":
-                                      "Draft not applied. Ask for explicit missing facts; never infer quantity or extend the clock.",
+                        except (ValueError, TypeError) as exc:
+                            rejection = exc if isinstance(exc, DraftRejected) else DraftRejected("invalid_patch")
+                            result = {"accepted": False, "code": rejection.code, "field": rejection.field,
+                                      "message": str(rejection),
                                       "missing_fields": draft.snapshot()["missing_fields"]}
-                            await emit({"type": "status", "message": result["message"]})
+                            await emit({"type": "status", "code": result["code"], "field": result["field"],
+                                        "message": result["message"]})
                         responses.append(types.FunctionResponse(id=call.id, name=call.name, response=result))
                     await session.send_tool_response(function_responses=responses)
             if not received:
