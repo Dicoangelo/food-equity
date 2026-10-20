@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "created_on": "2026-10-20",
+  "repository": "https://github.com/niatalwalkar/food-equity",
+  "source_commit": "fcb4f76678713c55af3873acfc21e2871f44bcc7",
+  "integration_base_commit": "46d3db111469c5d87a0d43f9f43ffd71cb8517c1",
+  "scope": "Six architecture illustrations in three packs. Core architecture is grounded in the named source snapshot; this is not deployment verification.",
+  "generation": {
+    "workflow": "ResearchGravity PaperBanana-style refined pipeline: planning, styling, generation, visual critique and targeted corrections",
+    "image_model": "gemini-3-pro-image",
+    "planner_and_critic_model": "gemini-3.1-pro-preview",
+    "transport": "Gemini Developer API",
+    "credential_scope": "Existing student Google Cloud project; personal key defaults excluded. No credentials included.",
+    "actual_billed_cost": "Not returned by provider"
+  },
+  "delivery": {
+    "formats": [
+      "1920px WebP",
+      "1920px JPEG",
+      "1280px WebP"
+    ],
+    "image_count": 18,
+    "image_bytes": 2814000,
+    "masters": "5504 × 3072 PNG originals retained in the local delivery; compressed variants are included in this repository. Original SHA-256 hashes are in web/manifest.json.",
+    "resize_policy": "Preserve aspect ratio; no crop; no upscaling; full-size PNG unchanged."
+  },
+  "review": {
+    "method": "Source audit, visual inspection of all six final figures and inspection of the dense 1920px runtime diagram.",
+    "source_claim_count": 33,
+    "boundaries": [
+      "Human confirmation is required for recipient capacity, acceptance and execution.",
+      "No automatic sending, reservation, dispatch or delivery is claimed.",
+      "No measured equity uplift or live operational availability is claimed."
+    ]
+  }
+}

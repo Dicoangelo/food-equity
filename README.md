@@ -4,7 +4,15 @@
 
 Turn an urgent surplus offer into a proposed **Match Brief**: an organization and why, what it can take, the pickup deadline and margin, neighborhood context, outreach drafts and up to two eligible alternatives. Recipient acceptance remains a human confirmation.
 
-**[Open the live broker](https://seattle-food-broker-6ukbp746xa-ue.a.run.app)** · [Three-minute team pre-read](docs/PRE-READ.md) · [Implementation handoff](docs/IMPLEMENTATION-HANDOFF.md) · [Control board](HACKATHON-BOARD.md)
+**[Open the live broker](https://seattle-food-broker-6ukbp746xa-ue.a.run.app)** · [Three-minute team pre-read](docs/PRE-READ.md) · [Implementation handoff](docs/IMPLEMENTATION-HANDOFF.md) · [Control board](HACKATHON-BOARD.md) · [Architecture gallery](docs/architecture/README.md)
+
+## Architecture at a glance
+
+[![BeforeTheCrush architecture: a reviewed surplus offer moves through candidate retrieval and feasibility checks to a coordinator handoff.](docs/architecture/web/01-pitch/01-pitch-overview-1920.webp)](docs/architecture/README.md)
+
+**[Browse all six diagrams →](docs/architecture/README.md)** · [Pitch](docs/architecture/README.md#pitch-pack) · [Technical](docs/architecture/README.md#technical-pack) · [Research](docs/architecture/README.md#research-pack) · [Download web pack](docs/architecture/downloads/BeforeTheCrush-web.zip)
+
+Three packs explain the coordinator workflow, runtime and MCP boundaries, and decision method with data provenance. The diagrams describe [source snapshot `fcb4f76`](https://github.com/niatalwalkar/food-equity/tree/fcb4f76678713c55af3873acfc21e2871f44bcc7); they do not establish the current deployment or recipient availability. The gallery includes compressed WebP/JPEG assets, captions and source references.
 
 ## Team access
 

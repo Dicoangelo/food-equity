@@ -1,0 +1,227 @@
+{
+  "source_commit": "fcb4f76678713c55af3873acfc21e2871f44bcc7",
+  "resize_policy": "Preserve aspect ratio; no crop; no upscaling; full-size PNG unchanged.",
+  "encoding": {
+    "webp": {
+      "quality": 85,
+      "method": 6
+    },
+    "jpeg": {
+      "quality": 87,
+      "subsampling": 0,
+      "optimize": true
+    }
+  },
+  "figures": [
+    {
+      "id": "01-pitch-overview",
+      "title": "From surplus alert to reviewed rescue plan",
+      "caption": "A reviewed surplus offer moves through candidate retrieval and feasibility checks to a coordinator handoff. Evidence informs the proposal; a person confirms the next step.",
+      "master_sha256": "b58bafeb6730915598cfb24a035f5c93da74610b1da94b38c7f4ecd5e7693eb5",
+      "variants": [
+        {
+          "path": "web/01-pitch/01-pitch-overview-1920.webp",
+          "format": "webp",
+          "mime_type": "image/webp",
+          "width": 1920,
+          "height": 1072,
+          "bytes": 115838,
+          "sha256": "cd869f913746e52af96f7266a264fda4f46001d7e143816d8b655cb49e4b59c3"
+        },
+        {
+          "path": "web/01-pitch/01-pitch-overview-1920.jpg",
+          "format": "jpg",
+          "mime_type": "image/jpeg",
+          "width": 1920,
+          "height": 1072,
+          "bytes": 319416,
+          "sha256": "29b005e7d7bfeeb2d95ce57d165cc4df8c91f7eceab9cfba3d350f9955af6913"
+        },
+        {
+          "path": "web/01-pitch/01-pitch-overview-1280.webp",
+          "format": "webp",
+          "mime_type": "image/webp",
+          "width": 1280,
+          "height": 714,
+          "bytes": 74372,
+          "sha256": "cb281e432c2a1325c8b9e8ec8bab7c84d4995fc4b845c6a3b1cc5e2edbfc93bc"
+        }
+      ]
+    },
+    {
+      "id": "02-human-handoff",
+      "title": "The coordinator stays in control",
+      "caption": "The system prepares a primary match, up to two backups and outreach drafts. The coordinator contacts recipients to confirm capacity and acceptance, then opens directions.",
+      "master_sha256": "5eefe8aef46f61b46fe70e0fd01339c44069b180cea8650d1d68c7c6b877c4ed",
+      "variants": [
+        {
+          "path": "web/01-pitch/02-human-handoff-1920.webp",
+          "format": "webp",
+          "mime_type": "image/webp",
+          "width": 1920,
+          "height": 1072,
+          "bytes": 80846,
+          "sha256": "af83cabb0c0b9a12cd4eb3010c94b80a64559d521b1db48622bfd08399eab21b"
+        },
+        {
+          "path": "web/01-pitch/02-human-handoff-1920.jpg",
+          "format": "jpg",
+          "mime_type": "image/jpeg",
+          "width": 1920,
+          "height": 1072,
+          "bytes": 224553,
+          "sha256": "6ab34cd6160f0540c28686e897d4b750531b7ac132451d234f23047cd889c8a7"
+        },
+        {
+          "path": "web/01-pitch/02-human-handoff-1280.webp",
+          "format": "webp",
+          "mime_type": "image/webp",
+          "width": 1280,
+          "height": 714,
+          "bytes": 49726,
+          "sha256": "f52b1790aa461bef021e2cd9b1d51f7dd40d564b0753e2d7b1123f627c3bc3f8"
+        }
+      ]
+    },
+    {
+      "id": "03-runtime-architecture",
+      "title": "Runtime and trust boundaries",
+      "caption": "The browser connects to the Cloud Run FastAPI service. The broker uses Vertex AI and loopback MCP Toolbox; the optional Live voice lane stages input for review.",
+      "master_sha256": "6875995e852634831d2366825f7a8c793baf17466990d0f9f4b9410dc25a2d2a",
+      "variants": [
+        {
+          "path": "web/02-technical/03-runtime-architecture-1920.webp",
+          "format": "webp",
+          "mime_type": "image/webp",
+          "width": 1920,
+          "height": 1072,
+          "bytes": 107192,
+          "sha256": "e042059672d811afb1a3a7d6b661be0fe93d1333ac61dea9e4813b472bcaa6af"
+        },
+        {
+          "path": "web/02-technical/03-runtime-architecture-1920.jpg",
+          "format": "jpg",
+          "mime_type": "image/jpeg",
+          "width": 1920,
+          "height": 1072,
+          "bytes": 277713,
+          "sha256": "3f1b0209a19f732f8724385e3bc6e515a01d7404d0dafab52efad7bbe10f7826"
+        },
+        {
+          "path": "web/02-technical/03-runtime-architecture-1280.webp",
+          "format": "webp",
+          "mime_type": "image/webp",
+          "width": 1280,
+          "height": 714,
+          "bytes": 67238,
+          "sha256": "accedca90edaed958ccb636e16da18a985917e68240130799c632a297bad139b"
+        }
+      ]
+    },
+    {
+      "id": "04-mcp-data-topology",
+      "title": "Four read tools, explicit evidence paths",
+      "caption": "Four read tools expose recipient retrieval, exact recipient evidence, tract context and pinned FoodKeeper guidance. FoodKeeper is a local reference, separate from BigQuery.",
+      "master_sha256": "f2e3688a0902a53f1721ab2a34a00ec3cc9202985111497071097c7b90dfdea4",
+      "variants": [
+        {
+          "path": "web/02-technical/04-mcp-data-topology-1920.webp",
+          "format": "webp",
+          "mime_type": "image/webp",
+          "width": 1920,
+          "height": 1072,
+          "bytes": 87190,
+          "sha256": "a2a4a9f403b7ef58c563dca5a319a721f7c223242f73777c09100e7a447868c5"
+        },
+        {
+          "path": "web/02-technical/04-mcp-data-topology-1920.jpg",
+          "format": "jpg",
+          "mime_type": "image/jpeg",
+          "width": 1920,
+          "height": 1072,
+          "bytes": 244092,
+          "sha256": "d53bc0af9a305e2c97e9763d7bfb361dd3d5ec4ef80e5285d0f2a06406f689ca"
+        },
+        {
+          "path": "web/02-technical/04-mcp-data-topology-1280.webp",
+          "format": "webp",
+          "mime_type": "image/webp",
+          "width": 1280,
+          "height": 714,
+          "bytes": 52780,
+          "sha256": "fb6287f9e20792ade48fabebaf239f7ec09db850f0294f5356690684e74f0ddc"
+        }
+      ]
+    },
+    {
+      "id": "05-decision-method",
+      "title": "Retrieve broadly, check explicitly, rank transparently",
+      "caption": "Explicit checks cover capacity, storage, service, acceptance and the pickup clock. Missing facts are flagged for confirmation; eligible candidates are ranked, enriched with evidence and rechecked.",
+      "master_sha256": "5ffea01521ec724e9834290703aa3941a784b089d947681a11f1a62c753f3f21",
+      "variants": [
+        {
+          "path": "web/03-research/05-decision-method-1920.webp",
+          "format": "webp",
+          "mime_type": "image/webp",
+          "width": 1920,
+          "height": 1072,
+          "bytes": 126714,
+          "sha256": "011756c19381699c8d2aa3cfd229cc1b65a2b86a30ca1ce68850aa3bc414ae88"
+        },
+        {
+          "path": "web/03-research/05-decision-method-1920.jpg",
+          "format": "jpg",
+          "mime_type": "image/jpeg",
+          "width": 1920,
+          "height": 1072,
+          "bytes": 304537,
+          "sha256": "e434208989b895aa279d252d5370174d591a6fa4e2e5aee8f4a799ba107ba89c"
+        },
+        {
+          "path": "web/03-research/05-decision-method-1280.webp",
+          "format": "webp",
+          "mime_type": "image/webp",
+          "width": 1280,
+          "height": 714,
+          "bytes": 79400,
+          "sha256": "93b5dd70625fd670ed000f21ab779a4c1274b4ad6bf164c462f2229db10cfa7f"
+        }
+      ]
+    },
+    {
+      "id": "06-data-provenance",
+      "title": "What the evidence can—and cannot—tell us",
+      "caption": "Recipient profiles, neighborhood context and FoodKeeper references support retrieval and guidance, with explicit limits on what each source establishes.",
+      "master_sha256": "bed66242a9d3606492febd2c8757a2e880cffca53cbabd200fbee83a7e3a7e8d",
+      "variants": [
+        {
+          "path": "web/03-research/06-data-provenance-1920.webp",
+          "format": "webp",
+          "mime_type": "image/webp",
+          "width": 1920,
+          "height": 1072,
+          "bytes": 145218,
+          "sha256": "85471f49be4eb9c0d7cd58fce2f7c5ae6bdf701a63bfc6f24b8743385c1877c4"
+        },
+        {
+          "path": "web/03-research/06-data-provenance-1920.jpg",
+          "format": "jpg",
+          "mime_type": "image/jpeg",
+          "width": 1920,
+          "height": 1072,
+          "bytes": 366257,
+          "sha256": "d148c4f4501fe2cd5a2ddc8e27a4b8448035dd27dfd8eaf6995ca61753462e3c"
+        },
+        {
+          "path": "web/03-research/06-data-provenance-1280.webp",
+          "format": "webp",
+          "mime_type": "image/webp",
+          "width": 1280,
+          "height": 714,
+          "bytes": 90918,
+          "sha256": "0ace0c9f63a2d3e37f1c5f2ba83cf689ded8723e85dd26cc4bd9123e7ca73bc2"
+        }
+      ]
+    }
+  ]
+}
