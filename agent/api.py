@@ -505,9 +505,11 @@ def index_dashboard():
                    class="w-full surface-field border border-line rounded-lg px-2.5 py-2 text-sm text-ink focus:outline-none" />
           </div>
           <div>
-            <label for="input-hours" class="block text-xs text-muted mb-1">Window (hours)</label>
+            <label id="pickup-window-label" for="input-hours" class="block text-xs text-muted mb-1">Window (hours)</label>
             <input id="input-hours" oninput="offerChanged('hours')" type="number" min="0.01" max="168" step="0.5" value="6.0"
                    class="w-full surface-field border border-line rounded-lg px-2.5 py-2 text-sm text-ink focus:outline-none" />
+            <output id="pickup-window-summary" aria-labelledby="pickup-window-label" class="hidden block text-sm text-ink"></output>
+            <button id="edit-pickup-window" type="button" class="hidden action-secondary mt-2" onclick="editPickupWindow()">Edit window</button>
           </div>
         </div>
 
@@ -806,6 +808,7 @@ def index_dashboard():
     let scenarioButtons = [];
     const receivedStages = [];
     let deadlineTicker = null;
+    let pickupWindowEditing = false;
     const offerFieldIds = ['input-donor','input-text','input-storage','input-pallets','input-hours'];
     const alertIntake = AlertIntake.create({
       snapshot: () => ({posting_text:document.getElementById('input-text').value,
@@ -883,6 +886,7 @@ def index_dashboard():
       offerFieldIds.forEach(id => { document.getElementById(id).disabled = locked; });
       scenarioButtons.forEach(button => { button.disabled = locked; });
       document.getElementById('btn-match').disabled = locked;
+      document.getElementById('edit-pickup-window').disabled = locked;
       document.getElementById('btn-alert-intake').disabled = locked;
       document.getElementById('btn-alert-apply').disabled = locked;
       refreshVoiceControls();
@@ -903,6 +907,7 @@ def index_dashboard():
     }
     function offerChanged(field) {
       if (matchInFlight) return;
+      pickupWindowEditing = false;
       alertIntake.invalidate(field === 'hours');
       if (field === 'hours') {
         offerClock.reset();
@@ -1757,10 +1762,27 @@ def index_dashboard():
         : `${Math.floor(minutes / 60) ? Math.floor(minutes / 60) + 'h ' : ''}${minutes % 60}m remaining.`;
       return {local, remaining, expired};
     }
+    function editPickupWindow() {
+      if (matchInFlight) return;
+      pickupWindowEditing=true;
+      refreshDeadlineDisplay();
+      const input=document.getElementById('input-hours');
+      input.focus?.();input.select?.();
+      setStatus('Enter a newly confirmed pickup window to replace the deadline. Opening this editor alone leaves the current deadline unchanged.');
+    }
     function refreshDeadlineDisplay() {
       refreshVoiceDraftClock();
       // Presentation reads the existing clock; it never establishes or extends it.
       const presentation = deadlinePresentation(offerClock.deadline);
+      const fixed=!!presentation && !pickupWindowEditing;
+      document.getElementById('input-hours').classList.toggle('hidden',fixed);
+      document.getElementById('pickup-window-label').textContent=fixed ? 'Time remaining' : 'Window (hours)';
+      document.getElementById('pickup-window-label').setAttribute('for',fixed ? 'pickup-window-summary' : 'input-hours');
+      const summary=document.getElementById('pickup-window-summary');
+      summary.classList.toggle('hidden',!fixed);
+      summary.textContent=presentation ? (presentation.expired ? 'Deadline passed' : presentation.remaining) : '';
+      const edit=document.getElementById('edit-pickup-window');
+      edit.classList.toggle('hidden',!fixed);edit.disabled=matchInFlight;
       const panel = document.getElementById('review-clock');
       const note = document.getElementById('voice-clock-note');
       panel.classList.toggle('hidden', !presentation);

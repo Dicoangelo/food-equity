@@ -279,6 +279,7 @@ async function run() {
       await page.locator('#brief-container').waitFor({state:'visible'});
       assert.match(await page.locator('#workspace-clock').innerText(),/^Deadline ·/);
       const clockCheckCalls=apiCount();
+      await page.locator('#edit-pickup-window').click();
       await page.locator('#input-hours').fill('2');
       await page.waitForFunction(()=>document.getElementById('workspace-clock').textContent==='2h pickup window');
       assert(await page.locator('#review-clock').evaluate(el=>el.hidden||el.classList.contains('hidden')),'Changing hours invalidates the previous fixed deadline display');
