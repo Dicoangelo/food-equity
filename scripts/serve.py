@@ -40,7 +40,7 @@ def main():
         sys.exit("Toolbox did not become ready")
     web = subprocess.Popen([
         sys.executable, "-m", "uvicorn", "api:app", "--app-dir", str(ROOT / "agent"),
-        "--host", "0.0.0.0", "--port", os.getenv("PORT", "8080"),
+        "--host", "0.0.0.0", "--port", os.getenv("PORT", "8080"), "--no-access-log",
     ])
     processes.append(web)
     try:
