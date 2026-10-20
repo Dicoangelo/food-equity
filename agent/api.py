@@ -373,6 +373,27 @@ def recipient_explorer_style():
     return FileResponse(Path(__file__).parent / "ui/recipient-explorer.css", media_type="text/css")
 
 
+@app.get("/ui/source-state.js", include_in_schema=False)
+def source_state_script():
+    return FileResponse(Path(__file__).parent / "ui/source-state.js", media_type="text/javascript")
+
+
+@app.get("/ui/view-context.js", include_in_schema=False)
+def view_context_script():
+    return FileResponse(Path(__file__).parent / "ui/view-context.js", media_type="text/javascript")
+
+
+
+@app.get("/ui/workspace.css", include_in_schema=False)
+def workspace_style():
+    return FileResponse(Path(__file__).parent / "ui/workspace.css", media_type="text/css")
+
+
+@app.get("/ui/workspace.js", include_in_schema=False)
+def workspace_script():
+    return FileResponse(Path(__file__).parent / "ui/workspace.js", media_type="text/javascript")
+
+
 @app.get("/ui/alert-intake.js", include_in_schema=False)
 def alert_intake_script():
     return FileResponse(Path(__file__).parent / "ui/alert-intake.js", media_type="text/javascript")
@@ -386,193 +407,68 @@ def index_dashboard():
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Seattle Resilient Food Equity & Surplus Broker</title>
+  <title>Food Equity · Seattle workspace</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script src="https://unpkg.com/leaflet.heat@0.2.0/dist/leaflet-heat.js"></script>
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
-  <style>
-    :root { color-scheme:light; --page:#f1f4f7; --surface:#fff; --inset:#eaf0f4; --ink:#182b3a; --secondary:#4f6475; --muted:#5b6f81; --line:#d7e0e7; --control:#788a99; --accent:#176b96; --accent-hover:#12577b; --selected:#e7f2f8; --positive:#197764; --positive-soft:#e6f3ee; --negative:#b5474d; --negative-soft:#fbecef; --warning:#94631f; --warning-soft:#fff5e6; }
-    * { box-sizing:border-box; }
-    html { min-width:320px; }
-    #rescue-app { margin:0; background:var(--page); color:var(--ink); font-family:Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; font-size:14px; line-height:1.55; -webkit-font-smoothing:antialiased; }
-    #rescue-app .text-xs { font-size:13px; line-height:1.5; }
-    .text-ink { color:var(--ink); } .text-secondary { color:var(--secondary); } .text-muted { color:var(--muted); }
-    .text-accent { color:var(--accent); } .text-positive { color:var(--positive); } .text-warning { color:var(--warning); } .text-negative { color:var(--negative); }
-    .surface-card, .surface-field { background:var(--surface); } .surface-inset { background:var(--inset); }
-    .surface-positive { background:var(--positive-soft); } .surface-selected { background:var(--selected); }
-    .border-line { border-color:var(--line); } .border-control { border-color:var(--control); }
-    .border-positive { border-color:#b4d9cd; } .border-warning { border-color:#e8d3af; } .border-negative { border-color:#ecc7ca; }
-    .dot-donor { background:#b7781d; } .dot-winner { background:var(--positive); } .dot-viable { background:var(--accent); } .dot-rejected { background:var(--negative); } .dot-neutral { background:var(--control); }
-    .surface-card { box-shadow:0 2px 8px rgb(24 43 58 / 3%); }
-    #rescue-app :where(button,input:not([type="checkbox"]):not([type="radio"]),select,textarea) { min-height:40px; font:inherit; }
-    #rescue-app :where(input:not([type="checkbox"]):not([type="radio"]),select,textarea) { min-width:0; background:var(--surface); color:var(--ink); border:1px solid var(--control); border-radius:8px; }
-    #rescue-app :where(button,a,input,select,textarea,summary):focus-visible { outline:3px solid var(--accent); outline-offset:3px; }
-    #rescue-app button:disabled { background:var(--inset); border-color:var(--line); color:var(--muted); cursor:not-allowed; opacity:1; }
-    #rescue-app :where(input,select,textarea):disabled { background:var(--inset); cursor:wait; }
-    #rescue-app :where(input[type="checkbox"],input[type="radio"]) { width:18px; height:18px; accent-color:var(--accent); }
-    #rescue-app summary { min-height:40px; padding:8px 0; cursor:pointer; }
-    #rescue-app a { color:var(--accent); text-underline-offset:3px; }
-    #rescue-app pre, #brief-sms { overflow-wrap:anywhere; }
-    .skip-link { position:fixed; top:12px; left:16px; transform:translateY(-200%); padding:10px 16px; background:var(--surface); z-index:1100; border:1px solid var(--control); border-radius:8px; }
-    .skip-link:focus { transform:translateY(0); }
-    .workspace-sidebar { position:fixed; inset:0 auto 0 0; width:216px; padding:28px 18px 22px; border-right:1px solid var(--line); background:var(--surface); display:flex; flex-direction:column; z-index:30; }
-    .workspace-name { display:flex; align-items:center; gap:10px; padding:0 8px 24px; font-size:16px; font-weight:650; letter-spacing:-.02em; }
-    .workspace-symbol { display:grid; place-items:center; width:34px; height:34px; flex:0 0 34px; border-radius:9px; background:var(--positive-soft); color:var(--positive); }
-    .workspace-name small { display:block; margin-top:2px; color:var(--muted); font-size:12px; font-weight:400; letter-spacing:0; }
-    .nav-label { padding:10px 12px; color:var(--muted); font-size:11px; font-weight:600; letter-spacing:.08em; text-transform:uppercase; }
-    .workspace-nav { display:grid; gap:5px; }
-    #rescue-app .workspace-nav a { display:flex; align-items:center; gap:10px; min-height:44px; padding:11px 12px; border-radius:8px; color:var(--secondary); font-weight:500; text-decoration:none; }
-    .workspace-nav a:hover { background:var(--selected); }
-    .workspace-nav i { width:18px; color:var(--muted); text-align:center; }
-    .workspace-note { margin-top:auto; padding:18px 10px 0; border-top:1px solid var(--line); color:var(--muted); font-size:12px; line-height:1.65; }
-    .workspace-note strong { display:block; margin-bottom:5px; color:var(--secondary); font-size:13px; font-weight:600; }
-    .page-shell { margin-left:216px; min-width:0; }
-    .app-header { max-width:1600px; margin:0 auto; padding:28px 28px 22px; display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:16px; }
-    .eyebrow { font-size:11px; font-weight:600; letter-spacing:.08em; text-transform:uppercase; color:var(--muted); margin:0 0 7px; }
-    .app-header h1 { max-width:720px; margin:0; font-size:clamp(23px,2.1vw,30px); line-height:1.2; font-weight:650; letter-spacing:-.035em; }
-    .header-description { margin:8px 0 0; color:var(--secondary); font-size:14px; }
-    .header-status { display:flex; flex-wrap:wrap; gap:8px; }
-    .status-pill { display:inline-flex; align-items:center; gap:8px; max-width:100%; border:1px solid var(--line); border-radius:8px; padding:7px 10px; color:var(--secondary); background:var(--surface); font-size:12px; }
-    .status-pill strong { font-weight:600; }
-    .workflow { width:100%; max-width:1600px; margin:0 auto; padding:0 28px; display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:12px; }
-    .workflow-step { min-width:0; text-align:left; padding:13px 16px; background:var(--surface); color:var(--secondary); border:1px solid var(--line); border-radius:12px; display:flex; align-items:center; gap:12px; }
-    .workflow-step[aria-current="step"] { color:var(--accent); border-color:#a8cadd; background:var(--selected); }
-    .step-number { width:28px; height:28px; border:1px solid var(--line); background:var(--surface); border-radius:8px; display:inline-flex; align-items:center; justify-content:center; flex-shrink:0; font-size:12px; font-weight:600; font-variant-numeric:tabular-nums; }
-    .workflow-step[aria-current="step"] .step-number { border-color:#a8cadd; }
-    .workflow-step strong { display:block; font-weight:600; font-size:13px; }
-    .workflow-step small { display:block; margin-top:2px; font-size:12px; }
-    .workspace-grid { display:grid; grid-template-columns:minmax(280px,340px) minmax(0,1fr); gap:20px; padding:24px 28px 32px; max-width:1600px; margin:0 auto; }
-    .workspace-grid > div { min-width:0; align-self:start; display:flex; flex-direction:column; gap:20px; }
-    .scenario-choice { min-width:0; text-align:left; display:flex; flex-direction:column; gap:5px; padding:11px 12px; border:1px solid var(--line); border-radius:8px; background:var(--surface); }
-    .scenario-choice:hover { border-color:var(--control); background:#f8fafc; }
-    .scenario-choice[aria-pressed="true"] { border-color:#8db8cf; background:var(--selected); box-shadow:inset 3px 0 0 var(--accent); }
-    .scenario-choice span:last-child { color:var(--muted); font-size:12px; line-height:1.6; }
-    .result-state { border:1px solid var(--line); border-top:3px solid #bccbd5; background:var(--surface); padding:20px; border-radius:12px; }
-    .result-state[data-state="success"] { border-top-color:var(--positive); }
-    .result-state[data-state="loading"] { border-top-color:var(--accent); }
-    .result-state[data-state="blocked"], .result-state[data-state="no-match"], .result-state[data-state="draft"] { border-top-color:#c7923c; }
-    .result-actions { display:flex; flex-wrap:wrap; gap:10px; margin-top:14px; }
-    .result-actions.hidden { display:none; }
-    .action-secondary { display:inline-flex; align-items:center; justify-content:center; gap:8px; padding:8px 13px; border:1px solid var(--control); border-radius:8px; background:var(--surface); color:var(--secondary); font-weight:500; text-align:center; }
-    .action-secondary:hover { background:var(--selected); border-color:var(--accent); color:var(--accent); }
-    #rescue-app .button-primary { display:inline-flex; align-items:center; justify-content:center; gap:8px; border:1px solid var(--accent); border-radius:8px; padding:11px 15px; background:var(--accent); color:white; font-weight:600; }
-    #rescue-app .button-primary:hover { background:var(--accent-hover); }
-    #rescue-app .button-primary:disabled { background:var(--inset); border-color:var(--line); color:var(--muted); }
-    .deadline-strip { display:grid; gap:4px; margin-top:14px; padding:12px; border:1px solid var(--line); border-radius:8px; background:var(--inset); font-size:13px; }
-    .deadline-strip time { font-weight:600; font-variant-numeric:tabular-nums; overflow-wrap:anywhere; }
-    .deadline-strip[data-state="expired"] { background:var(--warning-soft); border-color:#e8d3af; color:var(--warning); }
-    .deadline-strip.hidden, .run-progress.hidden { display:none; }
-    .run-progress { margin-top:16px; border-top:1px solid var(--line); padding-top:12px; }
-    .run-progress h3 { margin:0 0 4px; font-size:13px; font-weight:600; }
-    .progress-history { display:grid; gap:8px; padding:0; margin:12px 0; list-style:none; }
-    .progress-history li { display:grid; grid-template-columns:20px minmax(0,1fr); gap:8px; align-items:baseline; color:var(--secondary); font-size:13px; }
-    .progress-history li::before { content:"·"; text-align:center; color:var(--muted); font-weight:700; }
-    .progress-history li[aria-current="step"] { color:var(--accent); font-weight:600; }
-    .progress-history li[aria-current="step"]::before { content:"›"; color:var(--accent); }
-    .progress-history small { display:block; font-size:12px; font-weight:400; color:var(--muted); }
-    .status-copy { margin-top:10px; color:var(--muted); font-size:13px; }
-    #offer-panel, #review-panel, #handoff-panel, #map-panel, #foodkeeper-panel { scroll-margin-top:24px; }
-    #offer-panel label { font-size:13px; color:var(--secondary); }
-    #offer-panel h2, #scenario-panel h2 { font-size:15px; text-transform:none; letter-spacing:-.01em; color:var(--ink); }
-    #input-text { min-height:104px; resize:vertical; }
-    .voice-transcript { max-height:180px; overflow-y:auto; overflow-wrap:anywhere; }
-    .voice-transcript p + p { margin-top:8px; }
-    .voice-draft { display:grid; grid-template-columns:minmax(0,1fr); gap:6px; overflow-wrap:anywhere; }
-    #voice-text { resize:vertical; }
-    #brief-container h3 { text-transform:none; font-size:14px; letter-spacing:0; }
-    #brief-container .brief-badges { display:flex; flex-wrap:wrap; gap:8px; margin-top:8px; }
-    #brief-clock, #brief-provenance { background:var(--warning-soft); border-radius:7px; padding:10px 12px; }
-    #handoff-panel { background:#f8fafb; }
-    #city-caveats { margin-top:8px; }
-    #city-caveats p + p { margin-top:8px; }
-    #map-panel { min-width:0; }
-    #map { height:430px; width:100%; border:1px solid var(--line); border-radius:10px; }
-    #map-controls label { min-height:40px; align-items:center; }
-    #map-controls select { max-width:100%; }
-    @media (max-width:1150px) {
-      .workspace-sidebar { width:192px; padding-left:12px; padding-right:12px; }
-      .page-shell { margin-left:192px; }
-      .workspace-grid { grid-template-columns:minmax(270px,310px) minmax(0,1fr); padding-left:20px; padding-right:20px; gap:16px; }
-      .app-header { padding-left:20px; padding-right:20px; }
-      .workflow { padding:0 20px; gap:8px; }
-      .workflow-step { padding:12px; gap:8px; }
-      .workflow-step small { font-size:11px; }
-    }
-    @media (max-width:1000px) {
-      .workspace-sidebar { display:none; }
-      .page-shell { margin-left:0; }
-    }
-    @media (max-width:760px) {
-      .workspace-grid { grid-template-columns:minmax(0,1fr); }
-    }
-    @media (max-width:640px) {
-      #rescue-app :where(button,input:not([type="checkbox"]):not([type="radio"]),select,textarea) { min-height:44px; font-size:16px; }
-      #rescue-app summary, #map-controls label { min-height:44px; }
-      .app-header { padding:22px 16px 18px; gap:14px; }
-      .app-header h1 { font-size:24px; }
-      .header-description { font-size:13px; }
-      .workspace-grid { padding:16px; gap:16px; }
-      .workspace-grid > div { gap:16px; }
-      .workflow { padding:0 16px; gap:8px; }
-      .workflow-step { padding:10px 8px; gap:8px; flex-direction:column; align-items:flex-start; }
-      .workflow-step strong { font-size:12px; line-height:1.35; }
-      .workflow-step small { display:none; }
-      .step-number { width:24px; height:24px; font-size:12px; }
-      #offer-fields { grid-template-columns:minmax(0,1fr) minmax(0,1fr); }
-      #offer-fields > div:first-child { grid-column:1 / -1; }
-      #brief-container { padding:16px; }
-      #map { height:360px; }
-      .result-actions > button { flex:1 1 auto; }
-      #map-controls { gap:12px; }
-    }
-    @media (prefers-reduced-motion:reduce) { * { scroll-behavior:auto !important; } }
-  </style>
+  <link rel="stylesheet" href="/ui/workspace.css">
   <link rel="stylesheet" href="/ui/recipient-explorer.css">
 </head>
 <body id="rescue-app">
   <a href="#offer-panel" class="skip-link">Skip to surplus offer</a>
-  <aside class="workspace-sidebar" aria-label="Coordinator workspace">
-    <div class="workspace-name"><span class="workspace-symbol" aria-hidden="true"><i class="fa-solid fa-truck-ramp-box"></i></span><span>Food Equity<small>Seattle workspace</small></span></div>
-    <p class="nav-label">Coordinator tools</p>
+  <button id="workspace-nav-scrim" class="workspace-scrim" aria-label="Close navigation" hidden></button>
+  <aside id="workspace-navigation" class="workspace-sidebar" aria-label="Coordinator workspace">
+    <button id="workspace-nav-close" type="button" class="action-secondary workspace-nav-close" aria-label="Close workspace navigation">Close navigation</button>
+    <div class="workspace-name"><span class="workspace-symbol" aria-hidden="true"><i class="fa-solid fa-seedling"></i></span><span>Food Equity<small>Surplus to community</small></span></div>
+    <div class="workspace-switcher"><span class="workspace-switcher-icon" aria-hidden="true"><i class="fa-solid fa-location-dot"></i></span><span><strong>Seattle</strong><small>Coordinator workspace</small></span></div>
+    <p class="nav-label">Workspace</p>
     <nav class="workspace-nav" aria-label="Workspace sections">
-      <a href="#offer-panel"><i class="fa-solid fa-pen-to-square" aria-hidden="true"></i> Surplus offer</a>
-      <a href="#review-panel"><i class="fa-solid fa-list-check" aria-hidden="true"></i> Match review</a>
-      <a href="#map-panel"><i class="fa-solid fa-map-location-dot" aria-hidden="true"></i> Seattle map</a>
-      <a href="#foodkeeper-panel"><i class="fa-solid fa-book-open" aria-hidden="true"></i> Shelf-life reference</a>
+      <button type="button" data-workspace-view="match" aria-current="page"><i class="fa-solid fa-layer-group" aria-hidden="true"></i> Offer &amp; match</button>
+      <button type="button" data-workspace-view="recipients"><i class="fa-solid fa-map-location-dot" aria-hidden="true"></i> Recipients</button>
+      <button type="button" data-workspace-view="evidence"><i class="fa-solid fa-book-open" aria-hidden="true"></i> Evidence</button>
     </nav>
-    <div class="workspace-note"><strong>Agents for Impact 2026</strong>Retail &amp; grocer rescue<br>Proposals require recipient confirmation. No outreach or dispatch is sent by this app.</div>
+    <p class="nav-label">Support</p>
+    <nav class="workspace-nav" aria-label="Workspace support">
+      <button type="button" data-open-assistant aria-controls="assistant-drawer" aria-expanded="false"><i class="fa-regular fa-comments" aria-hidden="true"></i> Workspace assistant</button>
+      <a href="#foodkeeper-panel" data-workspace-target="foodkeeper-panel"><i class="fa-solid fa-leaf" aria-hidden="true"></i> Shelf-life reference</a>
+    </nav>
+    <div class="workspace-note"><span class="workspace-note-icon" aria-hidden="true"><i class="fa-solid fa-shield-halved"></i></span><strong>Coordinator review</strong>Check acceptance, address and pickup with the recipient before arranging a handoff.</div>
+    <div class="workspace-user"><span aria-hidden="true">FE</span><div>Food Equity<small>Seattle · retail &amp; grocer rescue</small></div></div>
   </aside>
   <div class="page-shell">
-  <header class="app-header">
-    <div>
-      <p class="eyebrow">Seattle / retail &amp; grocer rescue</p>
-      <h1>Seattle Food Equity &amp; Surplus Broker</h1>
-      <p class="header-description">Turn a surplus offer into a match worth confirming.</p>
-    </div>
-    <div class="header-status">
-      <div class="status-pill"><span class="w-2 h-2 rounded-full dot-neutral" aria-hidden="true"></span><span>Live run: <strong id="runtime-status">Not run yet</strong></span></div>
-      <div class="status-pill"><i class="fa-solid fa-map-pin text-accent" aria-hidden="true"></i><span>Seattle, WA</span></div>
-    </div>
-  </header>
-
-  <nav class="workflow" aria-label="Rescue workflow">
+    <header class="workspace-topbar">
+      <div class="workspace-breadcrumb"><button id="workspace-nav-toggle" type="button" class="workspace-menu-button" aria-label="Toggle workspace navigation" aria-controls="workspace-navigation" aria-expanded="false"><i class="fa-solid fa-bars" aria-hidden="true"></i></button><span>Workspace</span><span aria-hidden="true">/</span><strong>Seattle</strong></div>
+      <div class="workspace-topbar-actions"><span class="status-pill"><span class="status-dot" aria-hidden="true"></span>Proposals require confirmation</span><button type="button" class="action-secondary" data-open-assistant aria-controls="assistant-drawer" aria-expanded="false"><i class="fa-regular fa-comments" aria-hidden="true"></i><span>Assistant</span></button></div>
+    </header>
+    <nav class="workspace-tabs" aria-label="Workspace views">
+      <button type="button" data-workspace-view="match" aria-current="page">Offer &amp; match</button>
+      <button type="button" data-workspace-view="recipients">Recipients</button>
+      <button type="button" data-workspace-view="evidence">Evidence</button>
+    </nav>
+    <header class="app-header">
+      <div><p class="eyebrow">Food rescue coordination</p><h1 id="workspace-view-title">Match workspace</h1><p id="workspace-view-description" class="header-description">Give surplus food a clear next step. Review the offer, check recipient fit, and prepare a handoff.</p></div>
+      <div class="header-status"><span class="status-pill"><span class="w-2 h-2 rounded-full dot-neutral" aria-hidden="true"></span><span>Check: <strong id="runtime-status">Not run yet</strong></span></span></div>
+    </header>
+    <dl class="workspace-summary" aria-label="Current offer summary">
+      <div class="workspace-metric"><dt>Offer quantity</dt><dd id="workspace-quantity">1 pallet</dd><small>As entered by coordinator</small></div>
+      <div class="workspace-metric"><dt>Storage needed</dt><dd id="workspace-storage">Refrigerated</dd><small>Recipient capability to check</small></div>
+      <div class="workspace-metric"><dt>Pickup timing</dt><dd id="workspace-clock">6h pickup window</dd><small>Fixed deadline shown after check starts</small></div>
+      <div class="workspace-metric"><dt>Current check</dt><dd id="workspace-check">Not run yet</dd><small>A proposal still needs confirmation</small></div>
+    </dl>
+    <main id="workspace-content" tabindex="-1">
+      <section id="match-workspace" class="workspace-view" aria-label="Offer and match">
+          <nav class="workflow" aria-label="Rescue workflow">
     <button id="step-offer" class="workflow-step" aria-current="step" onclick="focusSection('offer-panel')"><span class="step-number">1</span><span><strong>Enter offer</strong><small>Food, storage and pickup window</small></span></button>
     <button id="step-review" class="workflow-step" onclick="focusSection('review-panel')"><span class="step-number">2</span><span><strong>Review match</strong><small>Reasons, clock and alternatives</small></span></button>
     <button id="step-handoff" class="workflow-step" disabled onclick="focusSection('handoff-panel')"><span class="step-number">3</span><span><strong>Prepare handoff</strong><small>Review and copy an outreach draft</small></span></button>
   </nav>
-
-  <!-- Main Grid -->
-  <main class="workspace-grid">
-
-    <!-- Left Controls Panel -->
-    <div class="offer-column">
-
-      <!-- Donor Input Form -->
-      <div id="offer-panel" tabindex="-1" class="surface-card rounded-xl p-5 border border-line flex flex-col gap-4">
+        <div class="workspace-grid">
+          <div class="offer-column">
+            <div id="offer-panel" tabindex="-1" class="surface-card rounded-xl p-5 border border-line flex flex-col gap-4">
         <h2 class="text-sm font-semibold uppercase tracking-wider text-muted flex items-center gap-2">
-          <i class="fa-solid fa-pen-to-square text-accent"></i> 1. Enter the surplus offer
+          <i class="fa-solid fa-pen-to-square text-accent"></i> Surplus offer
         </h2>
 
         <div>
@@ -595,21 +491,21 @@ def index_dashboard():
 
         <div id="offer-fields" class="grid grid-cols-3 gap-3">
           <div>
-            <label for="input-storage" class="block text-xs text-muted mb-1">Required Storage</label>
+            <label for="input-storage" class="block text-xs text-muted mb-1">Storage</label>
             <select id="input-storage" oninput="offerChanged()" class="w-full surface-field border border-line rounded-lg px-2.5 py-2 text-sm text-ink focus:outline-none">
               <option value="">Confirm storage</option>
-              <option value="cold" selected>Cold / Refrig</option>
-              <option value="ambient">Ambient (Dry)</option>
+              <option value="cold" selected>Cold</option>
+              <option value="ambient">Ambient</option>
               <option value="frozen">Frozen</option>
             </select>
           </div>
           <div>
-            <label for="input-pallets" class="block text-xs text-muted mb-1">Quantity (pallets)</label>
+            <label for="input-pallets" class="block text-xs text-muted mb-1">Pallets</label>
             <input id="input-pallets" oninput="offerChanged()" type="number" min="0.01" max="10000" step="0.5" value="1.0"
                    class="w-full surface-field border border-line rounded-lg px-2.5 py-2 text-sm text-ink focus:outline-none" />
           </div>
           <div>
-            <label for="input-hours" class="block text-xs text-muted mb-1">Pickup window (hours)</label>
+            <label for="input-hours" class="block text-xs text-muted mb-1">Window (hours)</label>
             <input id="input-hours" oninput="offerChanged('hours')" type="number" min="0.01" max="168" step="0.5" value="6.0"
                    class="w-full surface-field border border-line rounded-lg px-2.5 py-2 text-sm text-ink focus:outline-none" />
           </div>
@@ -624,9 +520,7 @@ def index_dashboard():
           <span>Find a viable match</span>
         </button>
       </div>
-
-      <!-- Scenario Selector -->
-      <details id="scenario-panel" class="surface-card rounded-xl p-5 border border-line">
+            <details id="scenario-panel" class="surface-card rounded-xl p-5 border border-line">
         <summary class="text-sm font-semibold text-accent">
           <i class="fa-solid fa-bolt text-warning"></i> Load an example offer · optional
         </summary>
@@ -635,65 +529,13 @@ def index_dashboard():
           <!-- Loaded by JS -->
         </div>
       </details>
-
-      <details id="voice-panel" class="surface-card rounded-xl p-5 border border-line">
-        <summary class="text-sm font-semibold text-accent cursor-pointer">Talk through an offer · optional</summary>
-        <p class="text-xs text-muted mt-3">Gemini Live can help draft the offer using the visible form and its origin coordinates. Review demo assumptions first. Microphone audio is sent only after Start microphone; typed notes work without it. Review and apply the draft yourself, then run matching separately. Nothing is dispatched.</p>
-        <p id="voice-status" role="status" aria-live="polite" class="text-xs text-secondary mt-3">Checking whether live intake is available…</p>
-        <div class="result-actions">
-          <button id="voice-start" type="button" class="action-secondary" disabled onclick="startVoiceSession(true)">Start microphone</button>
-          <button id="voice-stop" type="button" class="action-secondary" disabled onclick="stopVoiceSession()">Stop session</button>
-        </div>
-        <label for="voice-text" class="block text-xs text-secondary mt-3 mb-1">Or type a note to the intake agent</label>
-        <textarea id="voice-text" rows="2" maxlength="4000" disabled placeholder="For example: the pickup deadline is 5 pm today, Seattle time." class="w-full surface-field border border-line rounded-lg px-3 py-2 text-sm text-ink"></textarea>
-        <button id="voice-send" type="button" class="action-secondary mt-2" disabled onclick="sendVoiceText()">Send note</button>
-        <div id="voice-transcript" class="voice-transcript text-xs text-secondary mt-3" aria-label="Session transcript"></div>
-        <div id="voice-review" class="hidden border-t border-line mt-3 pt-3">
-          <h3 class="text-sm font-semibold text-ink">Review proposed offer fields</h3>
-          <div id="voice-draft" class="voice-draft text-xs text-secondary mt-2"></div>
-          <p id="voice-missing" role="status" class="text-xs text-warning mt-2"></p>
-          <p class="text-xs text-muted mt-2">Check the exact deadline, pickup origin, quantity and storage before applying. Applying stops the session and updates the form; it does not request a match.</p>
-          <button id="voice-apply" type="button" class="action-secondary mt-2" disabled onclick="applyVoiceDraft()">Apply reviewed draft to form</button>
-        </div>
-      </details>
-
-      <!-- Optional advisory lookup: independent of the offer and matching clock. -->
-      <details id="foodkeeper-panel" class="surface-card rounded-xl p-5 border border-line">
-        <summary class="text-sm font-semibold text-accent cursor-pointer">Shelf-life evidence · USDA FoodKeeper</summary>
-        <p class="text-xs text-muted mt-3">Consumer storage guidance for quality and freshness, not a commercial cold-chain or food-safety determination. Review the exact product, subtype and storage basis. This lookup never extends or changes the donor's pickup deadline.</p>
-        <label for="foodkeeper-query" class="block text-xs text-secondary mt-3 mb-1">Product to look up</label>
-        <input id="foodkeeper-query" type="search" maxlength="120" placeholder="For example: spinach or milk" onkeydown="if(event.key === 'Enter'){event.preventDefault();searchFoodKeeper();}"
-          class="w-full surface-field border border-line rounded-lg px-3 py-2 text-sm text-ink" />
-        <button id="btn-foodkeeper" type="button" onclick="searchFoodKeeper()" class="action-secondary mt-2">Look up USDA guidance</button>
-        <p id="foodkeeper-status" role="status" aria-live="polite" class="text-xs text-warning mt-3">No product selected. Search and review the matching options.</p>
-        <p id="foodkeeper-notice" class="text-xs text-muted mt-2"></p>
-        <div id="foodkeeper-results" class="flex flex-col gap-2 mt-3"></div>
-        <p id="foodkeeper-unknowns" class="text-xs text-muted mt-3"></p>
-      </details>
-
-      <!-- Eliminated Decoys Defense -->
-      <div class="surface-card rounded-xl p-5 border border-line">
-        <h2 class="text-sm font-semibold uppercase tracking-wider text-negative mb-3 flex items-center gap-2">
-          <i class="fa-solid fa-shield-halved"></i> Why candidates were ruled out
-        </h2>
-        <div id="decoys-list" class="flex flex-col gap-2 text-xs">
-          <p class="text-muted italic">Run a match to see the specific constraints that ruled candidates out.</p>
-        </div>
-        <div id="pending-container" class="hidden border-t border-line pt-4 mt-4">
-          <h3 class="text-sm font-semibold text-warning mb-2">Needs more information</h3>
-          <div id="pending-list" class="flex flex-col gap-2 text-xs"></div>
-        </div>
-      </div>
-
-    </div>
-
-    <!-- Right Map & Brief Panel -->
-    <div class="results-column">
-
-      <section id="review-panel" tabindex="-1" class="result-state" data-state="idle" aria-live="polite" aria-busy="false">
-        <p class="text-xs text-muted mb-1">2. Review the match</p>
-        <h2 id="result-title" class="text-xl font-semibold text-ink">An offer comes first</h2>
-        <p id="result-description" class="text-sm text-secondary mt-2">Enter the surplus and pickup window. The broker will retrieve candidates and check storage, capacity and timing before proposing a recipient.</p>
+            <div class="assistant-invitation"><span class="assistant-invitation-icon" aria-hidden="true"><i class="fa-regular fa-comments"></i></span><div><strong>Talk it through</strong><p>Draft an offer or ask about the current evidence.</p><button type="button" data-open-assistant class="text-action" aria-controls="assistant-drawer" aria-expanded="false">Open assistant <span aria-hidden="true">→</span></button></div></div>
+          </div>
+          <div class="results-column">
+            <section id="review-panel" tabindex="-1" class="result-state" data-state="idle" aria-live="polite" aria-busy="false">
+        <p class="text-xs text-muted mb-1">Current check</p>
+        <h2 id="result-title" class="text-xl font-semibold text-ink">Ready when your offer is</h2>
+        <p id="result-description" class="text-sm text-secondary mt-2">Review the offer, then check recipients for storage, capacity and pickup fit.</p>
         <p id="result-counts" class="status-copy"></p>
         <div id="review-clock" class="deadline-strip hidden">
           <span>Fixed donor pickup deadline · Seattle time</span>
@@ -714,12 +556,10 @@ def index_dashboard():
           <button id="action-handoff" class="action-secondary hidden" onclick="focusSection('handoff-panel')">Review outreach drafts</button>
         </div>
       </section>
-
-      <!-- Match Brief Artifact Card -->
-      <div id="brief-container" class="surface-card rounded-xl p-6 border border-line flex flex-col gap-4 hidden">
+            <div id="brief-container" class="surface-card rounded-xl p-6 border border-line flex flex-col gap-4 hidden">
         <div class="flex flex-wrap justify-between items-start border-b border-line pb-4">
           <div>
-            <span class="text-xs font-bold text-positive uppercase tracking-wider">Proposed Match Brief</span>
+            <span class="text-xs font-bold text-positive uppercase tracking-wider">Proposed recipient</span>
             <h2 id="brief-winner-name" class="text-2xl font-bold text-ink">Winner Name</h2>
             <p id="brief-winner-address" class="text-xs text-muted">Address</p>
             <button id="inspect-winner" class="action-secondary" type="button" onclick="RecipientExplorer.select(currentPayload?.winner?.recipient_id, this)">Inspect profile &amp; offer fit</button>
@@ -783,7 +623,7 @@ def index_dashboard():
         <div class="border-t border-line pt-3">
           <details class="cursor-pointer">
             <summary class="text-xs text-muted font-medium flex items-center gap-1">
-              <i class="fa-solid fa-code text-accent"></i> Inspect Full JSON Payload (Team API Handoff)
+              <i class="fa-solid fa-code text-accent"></i> Technical result details
             </summary>
             <div class="mt-2 relative">
               <button onclick="copyJsonPayload()" class="action-secondary mb-2">
@@ -795,51 +635,51 @@ def index_dashboard():
         </div>
 
       </div>
-
-      <details id="run-evidence" class="surface-card rounded-xl p-4 border border-line hidden">
-        <summary class="text-sm text-secondary cursor-pointer">Live execution trace</summary>
-        <pre id="execution-trace" class="whitespace-pre-wrap break-words text-xs text-muted mt-2"></pre>
-      </details>
-
-
-      <!-- Map Card: part of the working results column. -->
-      <div id="map-panel" class="surface-card rounded-xl p-4 border border-line flex flex-col gap-3">
+            <div id="match-map-slot"><div id="map-panel" class="surface-card rounded-xl p-4 border border-line flex flex-col gap-3">
         <div class="flex flex-wrap gap-3 justify-between items-center px-1">
           <div class="flex items-center gap-2 text-sm font-semibold text-ink">
             <i class="fa-solid fa-map-location-dot text-positive"></i>
-            <span>Seattle recipients &amp; offer fit</span>
+            <span>Recipient network</span>
           </div>
           <div class="flex flex-wrap items-center gap-3 text-xs">
             <span class="flex items-center gap-1"><span class="w-3 h-3 rounded-full dot-donor inline-block"></span> Donor</span>
             <span>1 = proposed · 2–3 = backups · ? = needs details · × = rejected</span>
           </div>
         </div>
-        <div id="map-controls" class="flex flex-wrap gap-3 items-center text-xs surface-inset p-3 rounded-lg">
+
+        <div class="map-toolbar">
           <button id="btn-city" onclick="loadCityData()" class="action-secondary">Load city data</button>
           <button id="fit-recipient-view" onclick="fitRecipientView()" class="action-secondary">Fit visible profiles</button>
-          <label class="flex items-center gap-1"><input id="show-need" type="checkbox" checked onchange="renderCityLayers()"> Census need heatmap</label>
-          <label class="flex items-center gap-1"><input id="show-recipients" type="checkbox" checked onchange="renderCityLayers()"> Recipient capabilities</label>
+          <details class="map-options">
+            <summary>Map layers &amp; storage</summary>
+            <div id="map-controls" class="map-layer-controls">
+
+
+          <label class="flex items-center gap-1"><input id="show-need" type="checkbox" checked onchange="viewFiltersChanged()"> Census need heatmap</label>
+          <label class="flex items-center gap-1"><input id="show-recipients" type="checkbox" checked onchange="viewFiltersChanged()"> Recipient capabilities</label>
           <label for="heat-metric">Need indicator</label>
-          <select id="heat-metric" onchange="renderCityLayers()" class="surface-card border border-control rounded px-2 py-1">
+          <select id="heat-metric" onchange="viewFiltersChanged()" class="surface-card border border-control rounded px-2 py-1">
             <option value="need_score">Combined need</option><option value="poverty_rate">Poverty rate</option><option value="no_vehicle_rate">No-vehicle household rate</option>
           </select>
           <label for="capability-filter">Storage</label>
-          <select id="capability-filter" onchange="renderCityLayers()" class="surface-card border border-control rounded px-2 py-1">
+          <select id="capability-filter" onchange="viewFiltersChanged()" class="surface-card border border-control rounded px-2 py-1">
             <option value="all">All profiles</option><option value="cold">Cold storage</option><option value="frozen">Freezer</option><option value="ambient">Ambient / dry</option>
           </select>
         </div>
+          </details>
+        </div>
         <p id="city-status" role="status" class="text-xs text-warning">Needs data — load the Seattle census and recipient layers.</p>
         <p id="map-tile-status" role="status" class="text-xs text-warning hidden"></p>
-        <p class="text-sm text-secondary">Explore a profile, inspect its evidence, and compare the recipients returned for your offer. Dataset capacity is not confirmed availability.</p>
+        <p class="text-sm text-secondary">Explore loaded profiles. Current acceptance and capacity still need confirmation.</p>
         <div class="recipient-browser">
           <div id="map" aria-label="Seattle approximate recipient and census locations"></div>
           <section class="recipient-directory" aria-label="Recipient directory">
             <label for="recipient-search">Find a recipient</label>
-            <input id="recipient-search" type="search" placeholder="Organization or city" oninput="renderCityLayers()" autocomplete="off">
+            <input id="recipient-search" maxlength="100" type="search" placeholder="Organization or city" oninput="viewFiltersChanged()" autocomplete="off">
             <div class="recipient-filters">
               <div>
                 <label for="outcome-filter">Offer decision</label>
-                <select id="outcome-filter" onchange="renderCityLayers()">
+                <select id="outcome-filter" onchange="viewFiltersChanged()">
                   <option value="all">All decisions</option>
                   <option value="eligible">Eligible proposals</option>
                   <option value="needs_confirmation">Needs confirmation</option>
@@ -849,7 +689,7 @@ def index_dashboard():
               </div>
               <div>
                 <label for="provenance-filter">Profile source</label>
-                <select id="provenance-filter" onchange="renderCityLayers()">
+                <select id="provenance-filter" onchange="viewFiltersChanged()">
                   <option value="all">All sources</option>
                   <option value="generated">Generated operations</option>
                   <option value="planted">Invented teaching case</option>
@@ -862,23 +702,84 @@ def index_dashboard():
           </section>
         </div>
         <section id="recipient-compare" aria-label="Compare current eligible proposals"></section>
-        <div id="heat-legend" class="text-xs text-secondary">
+        <details class="map-evidence"><summary>Map key, sources &amp; limitations</summary><div id="heat-legend" class="text-xs text-secondary">
           <div style="height:8px;background:linear-gradient(to right,#2563eb,#06b6d4,#facc15,#f97316,#ef4444);border-radius:4px;max-width:280px"></div>
           <span id="heat-legend-label">Low → high combined need (0–1); mean of poverty and no-vehicle rates. Smoothed tract-centroid points, not tract boundaries or individual hunger.</span>
         </div>
         <p class="text-xs text-muted">Unevaluated capability points: purple = freezer · blue = refrigeration · gray = other/unknown. An outlined marker is selected. These are dataset profiles, not live availability.</p>
         <p id="city-provenance" class="text-xs text-muted">Sources have not been loaded.</p>
+        <div id="map-source-slot"><div id="source-state-summary" class="surface-inset p-3 rounded-lg" aria-label="Evidence source status"></div></div>
         <details class="text-xs text-muted"><summary class="cursor-pointer">Sources and limits of this map</summary><div id="city-caveats"></div><pre id="city-source-details" class="whitespace-pre-wrap break-words mt-2"></pre></details>
         <p id="route-status" class="text-xs text-warning">Routing unavailable — no verified road route has been returned. Any dashed line is an illustrative straight-line connection.</p>
         <a id="external-directions" class="hidden text-sm text-accent underline" target="_blank" rel="noopener noreferrer">Open directions in Google Maps (approximate endpoints; verify the address)</a>
         <p class="text-xs text-muted">Recipient points may represent ZIP-level locations. Confirm actual collection address, acceptance, storage and pickup with the recipient. Census indicators describe neighborhoods, not individual eligibility.</p>
 
-      </div>
-    </div>
-
-  </main>
+      </details>
+</div></div>
+          </div>
+        </div>
+      </section>
+      <section id="recipients-workspace" class="workspace-view" aria-label="Recipients" hidden><div id="recipient-view-slot"></div></section>
+      <section id="evidence-workspace" class="workspace-view" aria-label="Evidence" hidden>
+        <div class="evidence-intro"><i class="fa-solid fa-circle-info" aria-hidden="true"></i><p><strong>Know what supports the decision.</strong> Profile data, neighborhood indicators and shelf-life guidance answer different questions. Current recipient acceptance and capacity require direct confirmation.</p></div>
+        <section class="surface-card evidence-sources" aria-labelledby="evidence-source-title"><h2 id="evidence-source-title">Sources behind this view</h2><p>What was loaded, how current it is, and what remains unconfirmed.</p><div id="evidence-source-slot"></div></section>
+        <div class="evidence-grid"><div><div id="exclusions-panel" class="surface-card rounded-xl p-5 border border-line">
+        <h2 class="text-sm font-semibold uppercase tracking-wider text-negative mb-3 flex items-center gap-2">
+          <i class="fa-solid fa-shield-halved"></i> Why candidates were ruled out
+        </h2>
+        <div id="decoys-list" class="flex flex-col gap-2 text-xs">
+          <p class="text-muted italic">Run a match to see the specific constraints that ruled candidates out.</p>
+        </div>
+        <div id="pending-container" class="hidden border-t border-line pt-4 mt-4">
+          <h3 class="text-sm font-semibold text-warning mb-2">Needs more information</h3>
+          <div id="pending-list" class="flex flex-col gap-2 text-xs"></div>
+        </div>
+      </div><details id="run-evidence" class="surface-card rounded-xl p-4 border border-line hidden">
+        <summary class="text-sm text-secondary cursor-pointer">How this check ran</summary>
+        <pre id="execution-trace" class="whitespace-pre-wrap break-words text-xs text-muted mt-2"></pre>
+      </details></div><div><details id="foodkeeper-panel" class="surface-card rounded-xl p-5 border border-line">
+        <summary class="text-sm font-semibold text-accent cursor-pointer">Shelf-life evidence · USDA FoodKeeper</summary>
+        <p class="text-xs text-muted mt-3">Consumer storage guidance for quality and freshness, not a commercial cold-chain or food-safety determination. Review the exact product, subtype and storage basis. This lookup never extends or changes the donor's pickup deadline.</p>
+        <label for="foodkeeper-query" class="block text-xs text-secondary mt-3 mb-1">Product to look up</label>
+        <input id="foodkeeper-query" type="search" maxlength="120" placeholder="For example: spinach or milk" onkeydown="if(event.key === 'Enter'){event.preventDefault();searchFoodKeeper();}"
+          class="w-full surface-field border border-line rounded-lg px-3 py-2 text-sm text-ink" />
+        <button id="btn-foodkeeper" type="button" onclick="searchFoodKeeper()" class="action-secondary mt-2">Look up USDA guidance</button>
+        <p id="foodkeeper-status" role="status" aria-live="polite" class="text-xs text-warning mt-3">No product selected. Search and review the matching options.</p>
+        <p id="foodkeeper-notice" class="text-xs text-muted mt-2"></p>
+        <div id="foodkeeper-results" class="flex flex-col gap-2 mt-3"></div>
+        <p id="foodkeeper-unknowns" class="text-xs text-muted mt-3"></p>
+      </details></div></div>
+      </section>
+    </main>
+    <footer class="workspace-footer"><span><span class="status-dot" aria-hidden="true"></span>Seattle coordinator workspace</span><span>Outreach drafts are never sent automatically</span></footer>
   </div>
-
+  <button id="assistant-scrim" class="workspace-scrim" aria-label="Close assistant session" hidden></button>
+  <aside id="assistant-drawer" role="dialog" aria-modal="true" aria-labelledby="assistant-title" tabindex="-1" hidden>
+    <div class="assistant-header"><div><p class="eyebrow">Your current workspace</p><h2 id="assistant-title">Food Equity assistant</h2></div><button id="assistant-close" type="button" class="action-secondary" aria-label="Close assistant and stop session">Close session</button></div>
+    <p class="assistant-context-note">Discussing <strong id="assistant-context-name">the current offer and loaded evidence</strong>.</p>
+    <details open id="voice-panel" class="surface-card rounded-xl p-5 border border-line">
+        <summary class="text-sm font-semibold text-accent cursor-pointer">Ask about this workspace</summary>
+        <p class="text-xs text-muted mt-3">Gemini Live can draft an offer or explain the current result and selected profile using the loaded display. It cannot verify current availability or rerun matching. Review demo assumptions first. Microphone audio is sent only after Start microphone; typed notes work without it. Review and apply the draft yourself, then run matching separately. Nothing is dispatched.</p>
+        <p id="voice-status" role="status" aria-live="polite" class="text-xs text-secondary mt-3">Checking whether live intake is available…</p>
+        <div class="result-actions">
+          <button id="voice-start" type="button" class="action-secondary" disabled onclick="startVoiceSession(true)">Start microphone</button>
+          <button id="voice-stop" type="button" class="action-secondary" disabled onclick="stopVoiceSession()">Stop session</button>
+        </div>
+        <label for="voice-text" class="block text-xs text-secondary mt-3 mb-1">Or ask about the current view</label>
+        <textarea id="voice-text" rows="2" maxlength="4000" disabled placeholder="Why this recipient? What needs confirmation? What are the current alternatives?" class="w-full surface-field border border-line rounded-lg px-3 py-2 text-sm text-ink"></textarea>
+        <button id="voice-send" type="button" class="action-secondary mt-2" disabled onclick="sendVoiceText()">Send note</button>
+        <p class="text-xs text-muted mt-3">Conversation text is model commentary. The action receipt below confirms whether a draft proposal or a display-only read actually completed.</p>
+        <div id="voice-transcript" class="voice-transcript text-xs text-secondary mt-3" aria-label="Session transcript"></div>
+        <div id="voice-action-receipt" class="text-xs text-secondary mt-3" role="status" aria-live="polite"></div>
+        <div id="voice-review" class="hidden border-t border-line mt-3 pt-3">
+          <h3 class="text-sm font-semibold text-ink">Review proposed offer fields</h3>
+          <div id="voice-draft" class="voice-draft text-xs text-secondary mt-2"></div>
+          <p id="voice-missing" role="status" class="text-xs text-warning mt-2"></p>
+          <p class="text-xs text-muted mt-2">Check the exact deadline, pickup origin, quantity and storage before applying. Applying stops the session and updates the form; it does not request a match.</p>
+          <button id="voice-apply" type="button" class="action-secondary mt-2" disabled onclick="applyVoiceDraft()">Apply reviewed draft to form</button>
+        </div>
+      </details>
+  </aside>
   <aside id="recipient-detail" class="hidden" role="dialog" aria-labelledby="recipient-detail-title" tabindex="-1">
     <button id="recipient-close" type="button" class="action-secondary" onclick="RecipientExplorer.close()" aria-label="Close recipient profile">Close profile</button>
     <div id="recipient-detail-content"></div>
@@ -964,6 +865,7 @@ def index_dashboard():
       el.className = warning ? 'text-sm text-warning' : 'text-sm text-secondary';
     }
     function focusSection(id) {
+      window.FoodWorkspace?.reveal(id);
       const target = document.getElementById(id);
       if (typeof target.scrollIntoView === 'function') target.scrollIntoView({block:'start',behavior:'auto'});
       if (typeof target.focus === 'function') target.focus({preventScroll:true});
@@ -1010,6 +912,7 @@ def index_dashboard():
       currentPayload = null;
       resetMatchProgress(false);
       refreshDeadlineDisplay();
+      if (typeof ViewContext !== 'undefined') ViewContext.changed('offer');
       document.getElementById('brief-container').classList.add('hidden');
       document.getElementById('run-evidence').classList.add('hidden');
       document.getElementById('external-directions').classList.add('hidden');
@@ -1029,8 +932,14 @@ def index_dashboard():
     // Voice intake is a bounded drafting session. Only runMatching calls the broker.
     const voice = {enabled:false, config:null, socket:null, starting:false, ready:false, generation:0,
       stream:null, inputContext:null, outputContext:null, source:null, worklet:null, workletURL:null,
-      playback:new Set(), nextPlayback:0, timer:null, resolveReady:null, draft:null, draftId:null, draftVersion:-1, transcript:[], sentBytes:0};
+      playback:new Set(), nextPlayback:0, timer:null, viewTimer:null, resolveReady:null, initialDraftSeen:false,
+      draft:null, draftId:null, draftVersion:-1, transcript:[], sentBytes:0};
     function voiceStatus(message) { document.getElementById('voice-status').textContent = message; }
+    function flushVoiceView() {
+      if (voice.viewTimer) { clearTimeout(voice.viewTimer); voice.viewTimer = null; }
+      if (typeof ViewContext !== 'undefined' && voice.ready && voice.socket?.readyState === 1)
+        voice.socket.send(JSON.stringify({type:'view_context',context:ViewContext.snapshot()}));
+    }
     function voiceDraftErrors(draft) {
       const f = draft?.fields || {}, errors = [];
       if (typeof f.donor_name !== 'string' || !f.donor_name.trim() || f.donor_name.length > 200) errors.push('donor name');
@@ -1048,7 +957,8 @@ def index_dashboard():
       const available = voice.enabled && !matchInFlight;
       document.getElementById('voice-start').disabled = !available || !!voice.socket || voice.starting;
       document.getElementById('voice-stop').disabled = !voice.socket && !voice.starting;
-      document.getElementById('voice-send').disabled = !available || voice.starting;
+      document.getElementById('voice-send').disabled = !available || voice.starting
+        || (typeof ViewActionReceipts !== 'undefined' && ViewActionReceipts.busy());
       document.getElementById('voice-text').disabled = !available;
       document.getElementById('voice-apply').disabled = matchInFlight || !voice.draft?.ready_for_review
         || voiceDraftErrors(voice.draft).length > 0;
@@ -1089,8 +999,8 @@ def index_dashboard():
       return fields;
     }
     function renderVoiceDraft(message) {
-      if (typeof message.draft_id !== 'string' || !Number.isInteger(message.draft_version) || message.draft_version < 0) return;
-      if ((voice.draftId && voice.draftId !== message.draft_id) || message.draft_version <= voice.draftVersion) return;
+      if (!message || typeof message.draft_id !== 'string' || !Number.isInteger(message.draft_version) || message.draft_version < 0) return false;
+      if ((voice.draftId && voice.draftId !== message.draft_id) || message.draft_version <= voice.draftVersion) return false;
       voice.draftId = message.draft_id;
       voice.draftVersion = message.draft_version;
       voice.draft = message;
@@ -1110,6 +1020,7 @@ def index_dashboard():
         : `Still needs confirmation: ${[...new Set([...missing,...errors])].join(', ') || 'the intake agent has not completed this draft'}.`;
       document.getElementById('voice-review').classList.remove('hidden');
       refreshVoiceControls();
+      return true;
     }
     function appendVoiceTranscript(message) {
       if (!['user','model'].includes(message.role) || typeof message.text !== 'string') return;
@@ -1146,6 +1057,8 @@ def index_dashboard():
       voice.starting = false;
       voice.ready = false;
       if (voice.timer) { clearTimeout(voice.timer); voice.timer = null; }
+      if (voice.viewTimer) { clearTimeout(voice.viewTimer); voice.viewTimer = null; }
+      if (typeof ViewActionReceipts !== 'undefined') ViewActionReceipts.reset();
       if (voice.resolveReady) { voice.resolveReady(false); voice.resolveReady = null; }
       const socket = voice.socket;
       voice.socket = null;
@@ -1211,6 +1124,7 @@ def index_dashboard():
       voice.source = ctx.createMediaStreamSource(stream);
       voice.worklet.port.onmessage = event => {
         if (generation !== voice.generation || !voice.ready || voice.socket?.readyState !== 1) return;
+        if (voice.viewTimer) flushVoiceView();
         const bytes = event.data.byteLength;
         if (voice.socket.bufferedAmount > 262144 || voice.sentBytes + bytes > 10000000) {
           stopVoiceSession('Audio upload reached its limit or the network fell behind. Review the draft or start a new session.'); return;
@@ -1229,6 +1143,7 @@ def index_dashboard():
       voice.draft = null;
       voice.draftId = null;
       voice.draftVersion = -1;
+      voice.initialDraftSeen = false;
       voice.transcript = [];
       voice.sentBytes = 0;
       document.getElementById('voice-transcript').replaceChildren();
@@ -1249,12 +1164,16 @@ def index_dashboard():
         voice.timer = setTimeout(()=>stopVoiceSession('Live intake did not connect. Use the form or try again.'),20000);
         socket.onmessage = event => {
           if (generation !== voice.generation) return;
-          if (event.data instanceof ArrayBuffer) { playVoiceAudio(event.data); return; }
+          if (event.data instanceof ArrayBuffer) {
+            if (typeof ViewActionReceipts === 'undefined' || ViewActionReceipts.current()) playVoiceAudio(event.data);
+            return;
+          }
           if (typeof event.data !== 'string' || event.data.length > 65536) return;
           let message;
           try { message = JSON.parse(event.data); } catch (_) { return; }
           if (!message || typeof message !== 'object') return;
           if (message.type === 'ready' && !voice.ready) {
+            if (typeof ViewContext !== 'undefined') socket.send(JSON.stringify({type:'view_context',context:ViewContext.snapshot()}));
             socket.send(JSON.stringify({type:'context',fields:voiceFormContext()}));
             voice.ready = true;
             voice.starting = false;
@@ -1263,11 +1182,31 @@ def index_dashboard():
             voice.resolveReady?.(true); voice.resolveReady = null;
             voiceStatus('Connected. Send a note or speak when the microphone is on.');
             refreshVoiceControls();
-          } else if (message.type === 'draft') renderVoiceDraft(message);
-          else if (message.type === 'transcript') appendVoiceTranscript(message);
-          else if (message.type === 'interrupted') flushVoicePlayback();
-          else if (message.type === 'turn_complete') voice.transcript.forEach(item=>{item.final=true;});
-          else if (message.type === 'status') voiceStatus(String(message.message || 'Live intake connected.').slice(0,1000));
+          } else if (message.type === 'view_context_ack') {
+            if (message.status !== 'accepted') stopVoiceSession('The view snapshot was refused. Review the current view and restart intake.');
+          } else if (message.type === 'turn_started' && typeof ViewActionReceipts !== 'undefined') {
+            if (!ViewActionReceipts.begin(message)) stopVoiceSession('A response belonged to an older view. Restart intake from the current view.');
+            refreshVoiceControls();
+          } else if (message.type === 'action_result' && typeof ViewActionReceipts !== 'undefined') {
+            ViewActionReceipts.accept(message);
+            refreshVoiceControls();
+          } else if (message.type === 'draft') {
+            if (typeof ViewActionReceipts === 'undefined' || (!voice.initialDraftSeen && !ViewActionReceipts.current())) {
+              voice.initialDraftSeen = true; renderVoiceDraft(message);
+            }
+          } else if (message.type === 'transcript') {
+            if (typeof ViewActionReceipts === 'undefined' || ViewActionReceipts.owns(message)) appendVoiceTranscript(message);
+          } else if (message.type === 'interrupted') {
+            if (typeof ViewActionReceipts === 'undefined') flushVoicePlayback();
+            else stopVoiceSession('The turn was interrupted. Restart intake so its actions belong to the current view.');
+          } else if (message.type === 'turn_complete') {
+            if (typeof ViewActionReceipts === 'undefined' || ViewActionReceipts.finish(message)) {
+              voice.transcript.forEach(item=>{item.final=true;}); refreshVoiceControls();
+            }
+          } else if (message.type === 'status') {
+            if (typeof ViewActionReceipts === 'undefined' || !ViewActionReceipts.busy() || ViewActionReceipts.owns(message))
+              voiceStatus(String(message.message || 'Live intake connected.').slice(0,1000));
+          }
           else if (message.type === 'error') stopVoiceSession(String(message.message || 'Live intake is unavailable. Use the offer form.').slice(0,1000));
         };
         socket.onerror = () => { if (generation === voice.generation) stopVoiceSession('Live intake could not connect. Check app access or continue with the form.'); };
@@ -1290,9 +1229,13 @@ def index_dashboard():
     async function sendVoiceText() {
       const input = document.getElementById('voice-text'), text = input.value.trim();
       if (!voice.enabled || matchInFlight || voice.starting || !text || text.length > 4000) return;
+      if (typeof ViewActionReceipts !== 'undefined' && ViewActionReceipts.busy()) return;
       const ready = voice.ready || await startVoiceSession(false);
       if (!ready || voice.socket?.readyState !== 1) return;
+      flushVoiceView();
+      if (typeof ViewActionReceipts !== 'undefined') ViewActionReceipts.expectTurn();
       voice.socket.send(JSON.stringify({type:'text',text}));
+      refreshVoiceControls();
       input.value = '';
       voiceStatus('Note sent. Review the intake agent’s draft before applying it.');
     }
@@ -1330,7 +1273,10 @@ def index_dashboard():
         document.getElementById('map').textContent = 'Map library unavailable. Match briefs remain usable.';
         return;
       }
-      map = L.map('map').setView([47.6062, -122.3321], 11);
+      // ResizeObserver owns container changes, including workspace view switches.
+      // Leaflet's window listener otherwise redraws hidden heat canvases at 0px.
+      map = L.map('map', {trackResize:false}).setView([47.6062, -122.3321], 11);
+      map.on?.('moveend', () => { if (typeof ViewContext !== 'undefined') ViewContext.changed(); });
       // Standard interactive OSM tiles use normal browser Referer and HTTP caching.
       // No prefetch, offline downloads, cache-busting parameters or API keys.
       const tiles = L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
@@ -1349,6 +1295,12 @@ def index_dashboard():
         if (!tileErrors) { tileNotice.textContent = ''; tileNotice.classList.add('hidden'); }
       });
       tiles.addTo(map);
+      const resizeVisibleMap = () => {
+        const container = document.getElementById('map');
+        if (container.clientWidth > 0 && container.clientHeight > 0) {
+          map.invalidateSize({pan:false,animate:false});
+        }
+      };
       if (typeof ResizeObserver !== 'undefined') {
         let previousSize = '';
         const observer = new ResizeObserver(entries => {
@@ -1356,10 +1308,12 @@ def index_dashboard():
           const key = `${size.width},${size.height}`;
           if (size.width > 0 && size.height > 0 && key !== previousSize) {
             previousSize = key;
-            requestAnimationFrame(() => map.invalidateSize({pan:false,animate:false}));
+            requestAnimationFrame(resizeVisibleMap);
           }
         });
         observer.observe(document.getElementById('map'));
+      } else {
+        window.addEventListener?.('resize', resizeVisibleMap);
       }
       cityRecipientLayer = L.layerGroup().addTo(map);
       tractPointLayer = L.layerGroup().addTo(map);
@@ -1394,6 +1348,7 @@ def index_dashboard():
         const data = await response.json();
         if (!response.ok || !['ready','success','ok','partial'].includes(data.status)) throw new Error(data.message || 'City dataset is not ready.');
         cityPayload = data;
+        if (typeof ViewContext !== 'undefined') ViewContext.changed('sources');
         renderCityLayers();
         document.getElementById('city-provenance').textContent = `Seattle aggregate data · retrieved ${data.as_of || 'time not supplied'}. Operational profiles require recipient confirmation; point locations are approximate.`;
         document.getElementById('city-source-details').textContent = JSON.stringify({provenance:data.provenance,limits:data.limits},null,2);
@@ -1402,6 +1357,7 @@ def index_dashboard():
         (data.warnings || []).forEach(warning => caveats.appendChild(textNode('p',warning)));
       } catch (error) {
         cityPayload = null;
+        if (typeof ViewContext !== 'undefined') ViewContext.changed('sources');
         if (cityRecipientLayer) cityRecipientLayer.clearLayers();
         if (tractPointLayer) tractPointLayer.clearLayers();
         if (heatLayer && map) { map.removeLayer(heatLayer); heatLayer = null; }
@@ -1409,6 +1365,10 @@ def index_dashboard():
         document.getElementById('city-provenance').textContent = 'No city data displayed. No heat values or recipient capabilities were fabricated.';
         renderCityLayers();
       } finally { btn.disabled = false; }
+    }
+    function viewFiltersChanged() {
+      if (typeof ViewContext !== 'undefined') ViewContext.changed();
+      renderCityLayers();
     }
     function renderCityLayers() {
       if (typeof RecipientExplorer !== 'undefined') RecipientExplorer.refresh();
@@ -1719,6 +1679,7 @@ def index_dashboard():
       document.getElementById('decoys-list').replaceChildren(textNode('p','Candidate checks are in progress for this offer.'));
       currentPayload = null;
       if (markersLayer) markersLayer.clearLayers();
+      if (typeof ViewContext !== 'undefined') ViewContext.changed('clear_result');
       renderCityLayers();
       setStatus('Checking semantic candidates, storage, capacity and the same pickup deadline…');
       reviewState('loading','Checking this offer','The live broker is retrieving candidates and checking feasibility. The offer is locked until this request finishes.');
@@ -1801,6 +1762,7 @@ def index_dashboard():
     }
     function renderResults(data) {
       currentPayload = data;
+      if (typeof ViewContext !== 'undefined') ViewContext.changed('result');
       renderCityLayers();
       document.getElementById('handoff-feedback').textContent = '';
       if (markersLayer) markersLayer.clearLayers();
@@ -1931,7 +1893,21 @@ def index_dashboard():
       catch (_) { setStatus('Clipboard unavailable. Select and copy the JSON manually.', true); }
     }
     window.onload = () => {
+      if (typeof ViewContext !== 'undefined') ViewContext.onChange(() => {
+        if (!voice.ready || voice.socket?.readyState !== 1) return;
+        if (ViewActionReceipts.busy()) {
+          stopVoiceSession('The displayed view changed during the turn. Restart intake to use the updated evidence.');
+          return;
+        }
+        if (voice.viewTimer) clearTimeout(voice.viewTimer);
+        const generation = voice.generation;
+        voice.viewTimer = setTimeout(() => {
+          if (generation === voice.generation && voice.ready && voice.socket?.readyState === 1)
+            flushVoiceView();
+        }, 80);
+      });
       initMap();
+      if (typeof ViewContext !== 'undefined') ViewContext.start();
       loadScenarios();
       loadCityData();
       loadVoiceConfig();
@@ -1946,8 +1922,12 @@ def index_dashboard():
       cancelMatching();
       alertIntake.invalidate();
       stopVoiceSession('Session closed.');
+      if (typeof ViewContext !== 'undefined') ViewContext.dispose();
     });
   </script>
+  <script src="/ui/source-state.js"></script>
+  <script src="/ui/view-context.js"></script>
+  <script src="/ui/workspace.js"></script>
   <script src="/ui/recipient-explorer.js"></script>
 
 </body>
