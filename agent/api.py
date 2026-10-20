@@ -384,6 +384,16 @@ def view_context_script():
 
 
 
+@app.get("/ui/companion.js", include_in_schema=False)
+def companion_script():
+    return FileResponse(Path(__file__).parent / "ui/companion.js", media_type="text/javascript")
+
+
+@app.get("/ui/companion.css", include_in_schema=False)
+def companion_style():
+    return FileResponse(Path(__file__).parent / "ui/companion.css", media_type="text/css")
+
+
 @app.get("/ui/workspace.css", include_in_schema=False)
 def workspace_style():
     return FileResponse(Path(__file__).parent / "ui/workspace.css", media_type="text/css")
@@ -414,6 +424,7 @@ def index_dashboard():
   <script src="https://unpkg.com/leaflet.heat@0.2.0/dist/leaflet-heat.js"></script>
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
   <link rel="stylesheet" href="/ui/workspace.css">
+  <link rel="stylesheet" href="/ui/companion.css">
   <link rel="stylesheet" href="/ui/recipient-explorer.css">
 </head>
 <body id="rescue-app">
@@ -2130,6 +2141,7 @@ def index_dashboard():
   <script src="/ui/view-context.js"></script>
   <script src="/ui/workspace.js"></script>
   <script src="/ui/recipient-explorer.js"></script>
+  <script src="/ui/companion.js"></script>
 
 </body>
 </html>
