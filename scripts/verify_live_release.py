@@ -3,14 +3,15 @@
 Example: python scripts/verify_live_release.py --output /tmp/live-release.json
 Use --skip-agent for health/data checks only (not proof of the ADK runtime).
 No credentials are written, no auth setup is attempted, and HTTP is not retried.
-The full run makes two real broker requests and one exact-ID evidence read,
-consuming model/query quota. The evidence read does not invoke a model.
+The full run makes one intake model request, two broker requests and one
+exact-ID evidence read. The evidence read does not invoke a model.
 """
 import argparse
 import asyncio
 from collections import Counter
 from datetime import datetime, timedelta, timezone
 import hashlib
+import importlib.util
 import json
 import math
 from pathlib import Path
@@ -33,11 +34,13 @@ MAX_RESPONSE_BYTES = 2 * 1024 * 1024
 MAX_STREAM_EVENTS = 256
 EVIDENCE_TIMEOUT_SECONDS = 35  # Server query budget 25s + cleanup 2s + network margin.
 MAX_EVIDENCE_BYTES = 131_072
+INTAKE_PATH = "/api/intake/parse"
+INTAKE_TEXT = "1 pallet of shelf-stable bread. Pickup within 4 hours."
 STREAM_PATH = "/api/match/stream"
 WORKFLOW_PATH = "/ui/offer-workflow.js"
 WORKFLOW_SOURCE = Path(__file__).resolve().parents[1] / "agent/ui/offer-workflow.js"
 PROGRESS_STAGES = (
-    "accepted", "connecting", "retrieving", "checking_constraints", "preparing_brief", "finalizing",
+    "accepted", "connecting", "retrieving", "checking_constraints", "enriching_evidence", "preparing_brief", "finalizing",
 )
 COUNT_FIELDS = {"candidate_count", "retrieved_count", "eligible_count", "rejected_count", "pending_count"}
 
@@ -198,7 +201,13 @@ class LiveClient:
         return asyncio.run(self._request_recipient_evidence(identifier))
 
     async def _request_recipient_evidence(self, identifier):
-        path = recipient_evidence_path(identifier)
+        return await self._request_bounded_json(recipient_evidence_path(identifier))
+
+    def request_intake(self, payload):
+        """Exactly one model request, bounded including EOF; never retry."""
+        return asyncio.run(self._request_bounded_json(INTAKE_PATH, payload, kind="intake"))
+
+    async def _request_bounded_json(self, path, payload=None, *, kind="evidence"):
         headers = {"Accept": "application/json"}
         if self._token:
             headers["Authorization"] = "Bearer " + self._token
@@ -209,7 +218,9 @@ class LiveClient:
                 async with httpx.AsyncClient(
                     timeout=min(self.timeout, EVIDENCE_TIMEOUT_SECONDS), follow_redirects=False,
                 ) as client:
-                    async with client.stream("GET", self.url + path, headers=headers) as response:
+                    options = {"json": payload} if payload is not None else {}
+                    async with client.stream("POST" if payload is not None else "GET",
+                                             self.url + path, headers=headers, **options) as response:
                         status = response.status_code
                         receipt = {"http_status": status}
                         if status != 200:
@@ -217,23 +228,23 @@ class LiveClient:
                             receipt["latency_ms"] = round((time.monotonic() - started) * 1000)
                             return receipt, None
                         content_type = response.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
-                        require(content_type == "application/json", "evidence_content_type")
+                        require(content_type == "application/json", kind + "_content_type")
                         directives = {part.strip().lower() for part in
                                       response.headers.get("Cache-Control", "").split(",")}
-                        require("no-store" in directives, "evidence_cache_contract")
+                        require("no-store" in directives, kind + "_cache_contract")
                         async for chunk in response.aiter_bytes():
-                            require(len(raw) + len(chunk) <= MAX_EVIDENCE_BYTES, "evidence_response_too_large")
+                            require(len(raw) + len(chunk) <= MAX_EVIDENCE_BYTES, kind + "_response_too_large")
                             raw.extend(chunk)
         except (TimeoutError, httpx.TimeoutException):
-            raise VerificationError("evidence_http_timeout") from None
+            raise VerificationError(kind + "_http_timeout") from None
         except httpx.HTTPError:
             raise VerificationError("http_unavailable_or_timeout") from None
         try:
             body = json.loads(raw)
             json.dumps(body, allow_nan=False)
         except (ValueError, UnicodeDecodeError):
-            raise VerificationError("invalid_evidence_json") from None
-        require(isinstance(body, dict), "evidence_response_not_object")
+            raise VerificationError("invalid_" + kind + "_json") from None
+        require(isinstance(body, dict), kind + "_response_not_object")
         receipt.update(latency_ms=round((time.monotonic() - started) * 1000),
                        response_bytes=len(raw), response_sha256=hashlib.sha256(raw).hexdigest(),
                        cache_control_no_store=True)
@@ -327,7 +338,8 @@ class LiveClient:
                         require(not pending, "stream_incomplete_line")
                         require(result is not None, "stream_missing_result")
                         require(all(stage in stages for stage in (
-                            "accepted", "connecting", "retrieving", "checking_constraints", "finalizing",
+                            "accepted", "connecting", "retrieving", "checking_constraints",
+                            "enriching_evidence", "finalizing",
                         )), "stream_missing_progress")
         except (TimeoutError, httpx.TimeoutException):
             raise VerificationError("stream_timeout") from None
@@ -466,6 +478,171 @@ def make_offer(stress=False, now=None):
     }
 
 
+def make_intake(now=None):
+    now = now or datetime.now(timezone.utc)
+    return {"posting_text": INTAKE_TEXT, "deadline_at": (now + timedelta(hours=4)).isoformat()}
+
+
+def check_intake(body, request):
+    require(body.get("status") == "review_required" and body.get("requires_review") is True
+            and body.get("sent") is False, "intake_review_boundary")
+    require(body.get("model") == "gemini-2.5-flash" and body.get("transport") == "vertex_adk",
+            "intake_model_contract")
+    digest = hashlib.sha256(request["posting_text"].encode()).hexdigest()
+    require(body.get("source_text_sha256") == digest, "intake_source_changed")
+    fields = body.get("fields", {})
+    require(set(fields) == {"posting_text", "required_storage", "pallet_count", "deadline_at", "hours_remaining"}
+            and fields.get("posting_text") == request["posting_text"]
+            and fields.get("required_storage") == "ambient"
+            and number(fields.get("pallet_count")) and fields["pallet_count"] == 1,
+            "intake_fabricated_or_missing_fields")
+    deadline, started = timestamp(request["deadline_at"]), timestamp(body.get("started_at"))
+    require(timestamp(fields.get("deadline_at")) == deadline, "intake_deadline_changed")
+    remaining = (deadline - started).total_seconds() / 3600
+    require(0 < remaining <= 4 and number(fields.get("hours_remaining"))
+            and abs(fields["hours_remaining"] - remaining) < 1 / 3600, "intake_clock_inconsistent")
+    evidence = body.get("quoted_evidence", {})
+    require(set(evidence) == {"required_storage", "pallet_count", "pickup_deadline"}, "intake_quotes_missing")
+    for key, pattern in (("required_storage", r"shelf-stable"),
+                         ("pallet_count", r"\b1 pallet\b"),
+                         ("pickup_deadline", r"\bwithin 4 hours\b")):
+        quote_text = evidence[key]
+        require(isinstance(quote_text, str) and bool(quote_text)
+                and quote_text in request["posting_text"] and re.search(pattern, quote_text, re.I),
+                "intake_quote_not_grounded")
+    terms = body.get("food_terms")
+    require(isinstance(terms, list) and 1 <= len(terms) <= 3
+            and any(isinstance(term, str) and "bread" in term.lower() for term in terms)
+            and all(isinstance(term, str) and 2 <= len(term) <= 80
+                    and term.lower() in request["posting_text"].lower() for term in terms), "intake_food_terms")
+    require(isinstance(body.get("questions"), list) and bool(body["questions"])
+            and all(isinstance(q, str) and 0 < len(q) <= 1000 for q in body["questions"])
+            and not any(key in body for key in ("winner", "match_brief", "recipient_id")), "intake_review_questions")
+    return {"status": "review_required", "model": body["model"], "transport": body["transport"],
+            "source_text_sha256": digest, "deadline_at": fields["deadline_at"],
+            "pallet_count": 1, "required_storage": "ambient", "quote_count": len(evidence),
+            "requires_review": True, "sent": False}
+
+
+def check_context_evidence(body, offer):
+    """Require real context retrieval within the existing bakery broker request."""
+    context = body.get("context_evidence", {})
+    require(context.get("status") == "ready" and context.get("deadline_modified") is False
+            and context.get("limits") == {"distinct_products": 3, "distinct_tracts": 3}, "context_not_ready")
+    trace = body["execution_trace"]
+    rows = ([body["winner"]] if body.get("winner") else []) + body.get("runners_up", [])
+    rows += body.get("eliminated_decoys", []) + body.get("pending_confirmation", [])
+    known_tracts = {str(row.get("tract_id")) for row in rows}
+    expected = []
+    counts = {}
+    for collection, tool, key in (("foodkeeper", "lookup_shelf_life", "query"),
+                                  ("tract_equity", "get_tract_equity", "tract_id")):
+        entries = context.get(collection)
+        require(isinstance(entries, list) and 1 <= len(entries) <= 3, "context_bounded_lookups")
+        selectors = []
+        ready = 0
+        for item in entries:
+            require(isinstance(item, dict) and item.get("status") in {"ready", "no_match"}
+                    and item.get("requires_confirmation") is True
+                    and item.get("operational_data_verified") is False and item.get("code") is None,
+                    "context_entry_contract")
+            args, source, data = item.get("request", {}), item.get("source", {}), item.get("data")
+            require(set(args) == {key} and isinstance(args[key], str), "context_request_contract")
+            selector = args[key]
+            selectors.append(selector.casefold())
+            require(source.get("transport") == "mcp" and source.get("tool") == tool
+                    and "source_observed_at" in source and source["source_observed_at"] is None,
+                    "context_source_contract")
+            retrieved = timestamp(item.get("retrieved_at"))
+            require(timestamp(offer["deadline_at"]) - timedelta(hours=offer["hours_remaining"])
+                    - timedelta(seconds=5) <= retrieved <= timestamp(body["evaluated_at"]) + timedelta(seconds=5),
+                    "context_retrieval_time")
+            if tool == "lookup_shelf_life":
+                require(2 <= len(selector) <= 80 and re.search(
+                    r"(?<!\w)" + re.escape(selector) + r"(?!\w)", offer["posting_text"], re.I),
+                    "context_product_not_grounded")
+                require(source.get("sha256") == FOODKEEPER_SHA256 and source.get("product_count") == 661
+                        and source.get("path") == "data/foodkeeper.json", "context_foodkeeper_pin")
+                require(isinstance(data, dict) and data.get("query") == selector
+                        and data.get("donor_deadline_modified") is False
+                        and data.get("remaining_freshness_hours") is None, "context_foodkeeper_advisory")
+                if item["status"] == "ready":
+                    check_foodkeeper({**data, "source": source})
+                else:
+                    require(data.get("status") == "no_match" and data.get("products") == [],
+                            "context_foodkeeper_no_match")
+            else:
+                require(re.fullmatch(r"53[0-9]{9}", selector) and selector in known_tracts,
+                        "context_tract_not_grounded")
+                require(source.get("table") == "a4i_food.tract_demographics"
+                        and source.get("rate_units") == "fraction_0_to_1"
+                        and "observation_year" in source and source["observation_year"] is None,
+                        "context_tract_source")
+                if item["status"] == "ready":
+                    require(isinstance(data, dict) and data.get("tract_id") == selector
+                            and data.get("rate_units") == "fraction_0_to_1"
+                            and data.get("geography_precision") == "tract_centroid"
+                            and "observation_year" in data and data["observation_year"] is None
+                            and data.get("service_catchment_verified") is False, "context_tract_contract")
+                    for rate in ("poverty_rate", "no_vehicle_rate", "assistance_rate", "need_score"):
+                        require(rate in data and (data[rate] is None or number(data[rate]) and 0 <= data[rate] <= 1),
+                                "context_tract_rate_units")
+                    p, v, need = data["poverty_rate"], data["no_vehicle_rate"], data["need_score"]
+                    require((need is None if p is None or v is None else
+                             need is not None and abs(need - (p + v) / 2) < 1e-9), "context_need_score")
+                else:
+                    require(data is None, "context_tract_no_match")
+            ready += item["status"] == "ready"
+            expected.append((tool, args, item["status"]))
+        require(len(set(selectors)) == len(selectors) and ready > 0, "context_ready_lookup_missing")
+        counts[tool] = {"lookups": len(entries), "ready": ready}
+    calls = [t for t in trace if t.get("stage") == "context_mcp_call"]
+    results = [t for t in trace if t.get("stage") == "context_mcp_result"]
+    require(len(calls) == len(results) == len(expected), "context_trace_counts")
+    discovery = [t for t in trace if t.get("stage") == "context_mcp_discovery"]
+    require(len(discovery) == 1 and set(discovery[0].get("tools", [])) >= set(counts), "context_discovery_missing")
+    for index, (tool, args, status) in enumerate(expected):
+        matching_calls = [t for t in calls if t.get("tool") == tool and t.get("request_index") == index]
+        matching_results = [t for t in results if t.get("tool") == tool and t.get("request_index") == index]
+        require(len(matching_calls) == len(matching_results) == 1
+                and matching_calls[0].get("request_sha256") == hashlib.sha256(
+                    json.dumps(args, sort_keys=True).encode()).hexdigest()
+                and matching_results[0].get("status") == status, "context_trace_mismatch")
+        stages = [t.get("stage") for t in trace]
+        require(stages.index("deterministic_constraints") < trace.index(matching_calls[0])
+                < trace.index(matching_results[0]) < stages.index("dispatch_clock_recheck"), "context_trace_order")
+    return {"status": "ready", "tools": counts, "foodkeeper_sha256": FOODKEEPER_SHA256,
+            "deadline_modified": False}
+
+
+def check_synthesis(body):
+    """Compare model-selected references with the checked-out pure fact catalog.
+
+    The release's /api/version gate separately binds this source to the image.
+    No model or cloud client is constructed by this pure formatter module.
+    """
+    spec = importlib.util.spec_from_file_location("smoke_brief_facts", WORKFLOW_SOURCE.parents[1] / "brief_synthesis.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    winner = body["winner"]
+    ranking = {"winner": winner, "viable_runners_up": body.get("runners_up", []),
+               "eliminated_decoys": body.get("eliminated_decoys", []),
+               "min_buffer_hours": winner.get("min_buffer_hours", .25)}
+    catalog = {card["id"]: card for card in module.evidence_cards(ranking, body.get("context_evidence", {}))}
+    selected = body.get("synthesis_evidence")
+    require(isinstance(selected, list) and 1 <= len(selected) <= 5, "synthesis_evidence_missing")
+    ids = []
+    for card in selected:
+        require(isinstance(card, dict) and isinstance(card.get("id"), str)
+                and card == catalog.get(card["id"])
+                and card["text"] in body["match_brief"].get("match_justification", ""),
+                "synthesis_evidence_not_grounded")
+        ids.append(card["id"])
+    require(len(set(ids)) == len(ids), "synthesis_evidence_duplicate")
+    return {"selected_card_ids": ids, "facts_source": "final_deterministic_ranking",
+            "model_role": "evidence_selection_and_outreach_priorities"}
+
+
 def check_broker(body, offer, stress=False):
     require(body.get("status") in {"success", "no_viable_match"}, "agent_incomplete_or_fallback")
     require(body.get("requires_confirmation") is True and bool(body.get("provenance_warning")),
@@ -541,6 +718,8 @@ def check_broker(body, offer, stress=False):
     if stress:
         require(winner is None and not runners and "capacity_exceeded" in reason_codes,
                 "capacity_stress_not_blocked")
+    context_summary = check_context_evidence(body, offer) if not stress else None
+    synthesis = check_synthesis(body) if winner is not None else None
     # Persist bounded evidence only; not provider messages, model prose or full profiles.
     return {"status": body["status"], "generation_mode": body.get("generation_mode"),
             "query_sha256": expected_hash, "candidate_count": len(ids),
@@ -549,7 +728,8 @@ def check_broker(body, offer, stress=False):
             "proposed_count": len(proposed), "rejected_count": len(rejected), "pending_count": len(pending),
             "proposals": [{"recipient_id": row["recipient_id"], "profile_source": row["profile_source"],
                            "time_margin_hours": row["time_margin_hours"]} for row in proposed],
-            "reason_codes": reason_codes, "requires_confirmation": True}
+            "reason_codes": reason_codes, "requires_confirmation": True,
+            "context_evidence": context_summary, "synthesis": synthesis}
 
 
 def run_checks(client, *, skip_agent=False, expected_commit=None, expected_revision=None):
@@ -570,7 +750,7 @@ def run_checks(client, *, skip_agent=False, expected_commit=None, expected_revis
             require(receipt["http_status"] == 200, "unexpected_http_status")
             if isinstance(body, dict):
                 known_statuses = {"ok", "ready", "partial", "unavailable", "options", "no_match",
-                                  "blocked", "draft", "success", "no_viable_match"}
+                                  "blocked", "draft", "success", "no_viable_match", "review_required"}
                 record["response_status"] = body.get("status") if body.get("status") in known_statuses else "unknown"
                 if payload is not None:
                     # Retain observed counts/trace even when strict validation fails.
@@ -624,6 +804,10 @@ def run_checks(client, *, skip_agent=False, expected_commit=None, expected_revis
     ):
         return checks
     if not skip_agent:
+        intake = make_intake()
+        if not execute("free_text_intake", INTAKE_PATH, lambda body: check_intake(body, intake),
+                       intake, fetch=lambda: client.request_intake(intake)):
+            return checks
         for stress in (False, True):
             offer = make_offer(stress)
             execute("cold_capacity_stress" if stress else "bakery_source_3",
@@ -656,6 +840,8 @@ def main(argv=None):
                   "No-match can pass runtime verification; proposals never mean recipient acceptance or delivery.",
                   "FoodKeeper guidance never extends the donor deadline. No outreach is sent.",
                   "Bakery verifies streaming; capacity stress verifies JSON. Only two broker requests are made.",
+                  "One extra intake model request extracts explicit pallets/storage/pickup hours for review; no quantity conversion.",
+                  "Bakery must retrieve both tract and FoodKeeper context through MCP; synthesis selects grounded fact references.",
                   "One exact-ID MCP read uses an ID from the existing city response; it adds no model or match request.",
                   "A fresh retrieval timestamp is not a source observation or operational confirmation.",
                   "Live cancellation is not probed; disconnect cleanup is covered by offline ASGI tests.",
@@ -668,7 +854,7 @@ def main(argv=None):
         report["checks"] = run_checks(LiveClient(report["target"]["url"], token), skip_agent=args.skip_agent,
                                      expected_commit=args.expected_commit,
                                      expected_revision=report["target"]["revision"])
-        expected_checks = (5 if args.skip_agent else 7) + int(args.expected_commit is not None)
+        expected_checks = (5 if args.skip_agent else 8) + int(args.expected_commit is not None)
         passed = len(report["checks"]) == expected_checks and all(c["passed"] for c in report["checks"])
         report["status"] = "passed" if passed else "failed"
         report["runtime_passed"] = passed and not args.skip_agent
