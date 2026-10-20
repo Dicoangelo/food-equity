@@ -11,6 +11,7 @@ env/
 service-account*.json
 credentials.json
 .env
+gha-creds-*.json
 
 # OS noise
 .DS_Store

@@ -5,11 +5,16 @@ Exposes REST API endpoints for team integration and serves an interactive Map Da
 
 import os
 import logging
+import json
+import re
+import sys
+import time
+from uuid import uuid4
 from datetime import datetime, timezone
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal, Optional
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -17,12 +22,66 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("food_broker_api")
+request_logger = logging.getLogger("food_broker_request")
+request_logger.setLevel(logging.INFO)
+request_logger.propagate = False
+if not request_logger.handlers:
+    stream_handler = logging.StreamHandler(sys.stdout)
+    stream_handler.setFormatter(logging.Formatter("%(message)s"))
+    request_logger.addHandler(stream_handler)
+
+
+def release_info():
+    """Only explicitly named, bounded deployment identifiers are public."""
+    def identifier(name, pattern):
+        value = os.getenv(name, "")
+        return value if re.fullmatch(pattern, value) else None
+    return {
+        "commit_sha": identifier("APP_COMMIT_SHA", r"[0-9a-fA-F]{7,64}"),
+        "revision": identifier("K_REVISION", r"[a-z][a-z0-9-]{0,62}"),
+        "service": identifier("K_SERVICE", r"[a-z][a-z0-9-]{0,62}"),
+    }
 
 app = FastAPI(
     title="Seattle Food Equity & Surplus Broker API",
     description="Intelligent Surplus Brokering using BigQuery Vector Search and Gemini",
     version="1.0.0",
 )
+
+
+@app.middleware("http")
+async def request_telemetry(request: Request, call_next):
+    supplied_id = request.headers.get("x-request-id", "")
+    request_id = supplied_id.lower() if re.fullmatch(
+        r"[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}", supplied_id
+    ) else str(uuid4())
+    started = time.perf_counter()
+    try:
+        response = await call_next(request)
+    except Exception:
+        # Never serialize exception text, request content or credentials into logs.
+        response = JSONResponse(status_code=500, content={
+            "status": "error", "message": "The request could not complete. Retry and share the request ID with the team.",
+            "request_id": request_id,
+        })
+    response.headers["X-Request-ID"] = request_id
+    route = request.scope.get("route")
+    metadata = release_info()
+    request_logger.info(json.dumps({
+        "severity": "ERROR" if response.status_code >= 500 else "INFO",
+        "event": "http_request",
+        "method": request.method if request.method in {"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"} else "OTHER",
+        # A known route template cannot contain user-supplied path/query data.
+        "path": getattr(route, "path", "<unmatched>"),
+        "status": response.status_code,
+        "duration_ms": round((time.perf_counter() - started) * 1000, 3),
+        "request_id": request_id,
+        "revision": metadata["revision"],
+        "commit_sha": metadata["commit_sha"],
+        "service": metadata["service"],
+    }, separators=(",", ":")))
+    return response
+
 
 try:
     from .live_intake import router as live_router
@@ -177,6 +236,12 @@ def foodkeeper_search(query: str = Query(..., min_length=2, max_length=120)):
 @app.get("/healthz")
 def health():
     return {"status": "ok", "cloud_dependencies": "not_checked"}
+
+
+@app.get("/api/version")
+def version():
+    """Build identity only; not a cloud-dependency readiness check."""
+    return JSONResponse(content=release_info(), headers={"Cache-Control": "no-store"})
 
 
 @app.post("/api/match")
@@ -1611,4 +1676,4 @@ def index_dashboard():
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("api:app", host="0.0.0.0", port=8080, reload=False)
+    uvicorn.run("api:app", host="0.0.0.0", port=8080, reload=False, access_log=False)

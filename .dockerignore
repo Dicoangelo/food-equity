@@ -7,6 +7,7 @@ __pycache__
 .env
 *.key
 credentials.json
+gha-creds-*.json
 service-account*.json
 data/*
 !data/foodkeeper.json
