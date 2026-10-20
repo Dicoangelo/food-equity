@@ -9,7 +9,9 @@ active="$(gcloud auth list --filter=status:ACTIVE --format='value(account)')"
 [[ "$(gcloud config get-value project 2>/dev/null)" == "$project" ]] || { echo "Stop: wrong active project."; exit 1; }
 cd "$(dirname "$0")/.."
 gcloud run deploy "$service" --source . --project "$project" --region "$region" \
-  --no-allow-unauthenticated --min-instances 0 --max-instances 2 \
-  --cpu 1 --memory 1Gi --concurrency 8 --timeout 240 \
+  --no-allow-unauthenticated --min 1 --max 4 --min-instances 0 --max-instances 4 \
+  --cpu 2 --memory 2Gi --concurrency 4 --timeout 240 --cpu-boost \
+  --startup-probe "httpGet.path=/healthz,httpGet.port=8080,periodSeconds=5,timeoutSeconds=2,failureThreshold=24" \
+  --liveness-probe "httpGet.path=/healthz,httpGet.port=8080,periodSeconds=30,timeoutSeconds=3,failureThreshold=3" \
   --set-env-vars "GOOGLE_CLOUD_PROJECT=$project,GOOGLE_CLOUD_LOCATION=$region,GOOGLE_GENAI_USE_VERTEXAI=true,GEMINI_MODEL=gemini-2.5-flash"
 gcloud run services describe "$service" --project "$project" --region "$region" --format='value(status.url)'

@@ -8,7 +8,7 @@ import logging
 from datetime import datetime, timezone
 from functools import lru_cache
 from typing import Literal, Optional
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -49,6 +49,15 @@ def get_city_service():
     except ImportError:
         from city import CityDataService
     return CityDataService()
+
+
+@lru_cache(maxsize=1)
+def get_foodkeeper_service():
+    try:
+        from .foodkeeper import FoodKeeperService
+    except ImportError:
+        from foodkeeper import FoodKeeperService
+    return FoodKeeperService()
 
 
 class MatchRequest(BaseModel):
@@ -133,6 +142,24 @@ def city_data():
         return JSONResponse(status_code=503, content={
             "city": "Seattle", "status": "unavailable", "tracts": [], "recipients": [],
             "message": "City data could not be loaded from BigQuery. No heatmap values have been invented.",
+        })
+
+
+@app.get("/api/foodkeeper")
+def foodkeeper_search(query: str = Query(..., min_length=2, max_length=120)):
+    """Read-only consumer guidance lookup; never changes the donor pickup deadline."""
+    query = query.strip()
+    if len(query) < 2:
+        raise HTTPException(status_code=422, detail="Enter at least two characters for a product lookup.")
+    try:
+        return JSONResponse(content=get_foodkeeper_service().search(query, limit=5))
+    except ValueError:
+        raise HTTPException(status_code=422, detail="Use a specific product query of 2–120 characters.")
+    except Exception as exc:
+        logger.error("FoodKeeper lookup failed (%s)", type(exc).__name__)
+        return JSONResponse(status_code=503, content={
+            "status": "unavailable", "products": [], "selection_required": True,
+            "message": "The pinned USDA FoodKeeper guidance could not be read. No shelf life has been assumed.",
         })
 
 
@@ -293,6 +320,20 @@ def index_dashboard():
           <span>Run Vector Search & Broker Match</span>
         </button>
       </div>
+
+      <!-- Optional advisory lookup: independent of the offer and matching clock. -->
+      <details class="bg-slate-800 rounded-xl p-5 border border-slate-700 shadow-md">
+        <summary class="text-sm font-semibold text-sky-300 cursor-pointer">Shelf-life evidence · USDA FoodKeeper</summary>
+        <p class="text-xs text-slate-400 mt-3">Consumer storage guidance for quality and freshness, not a commercial cold-chain or food-safety determination. Review the exact product, subtype and storage basis. This lookup never extends or changes the donor's pickup deadline.</p>
+        <label for="foodkeeper-query" class="block text-xs text-slate-300 mt-3 mb-1">Product to look up</label>
+        <input id="foodkeeper-query" type="search" maxlength="120" placeholder="For example: spinach or milk" onkeydown="if(event.key === 'Enter'){event.preventDefault();searchFoodKeeper();}"
+          class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white" />
+        <button id="btn-foodkeeper" type="button" onclick="searchFoodKeeper()" class="mt-2 bg-sky-700 hover:bg-sky-600 px-3 py-2 rounded text-sm text-white">Look up USDA guidance</button>
+        <p id="foodkeeper-status" role="status" aria-live="polite" class="text-xs text-amber-300 mt-3">No product selected. Search and review the matching options.</p>
+        <p id="foodkeeper-notice" class="text-xs text-slate-400 mt-2"></p>
+        <div id="foodkeeper-results" class="flex flex-col gap-2 mt-3"></div>
+        <p id="foodkeeper-unknowns" class="text-xs text-slate-400 mt-3"></p>
+      </details>
 
       <!-- Eliminated Decoys Defense -->
       <div class="bg-slate-800 rounded-xl p-5 border border-slate-700 shadow-md">
@@ -611,6 +652,61 @@ def index_dashboard():
       // Google directions open on Google Maps; no road geometry or travel time is invented here.
       document.getElementById('route-status').textContent = 'Routing unavailable on this map — open Google Maps to calculate directions using approximate endpoints. Dashed line is an illustrative straight-line connection; no travel time is claimed.';
       if (markersLayer && validPoint(donor) && validPoint(winner)) L.polyline([[donor.latitude,donor.longitude],[winner.latitude,winner.longitude]], {color:'#10b981',weight:3,dashArray:'6, 6'}).addTo(markersLayer);
+    }
+    async function searchFoodKeeper() {
+      const button = document.getElementById('btn-foodkeeper');
+      const status = document.getElementById('foodkeeper-status');
+      const query = document.getElementById('foodkeeper-query').value.trim();
+      document.getElementById('foodkeeper-results').replaceChildren();
+      document.getElementById('foodkeeper-notice').textContent = '';
+      document.getElementById('foodkeeper-unknowns').textContent = '';
+      if (query.length < 2 || query.length > 120) {
+        status.textContent = 'Enter a specific product query of 2–120 characters.';
+        return;
+      }
+      button.disabled = true;
+      status.textContent = 'Looking up the pinned USDA FoodKeeper dataset…';
+      try {
+        const response = await fetch(`/api/foodkeeper?query=${encodeURIComponent(query)}`);
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.message || (typeof data.detail === 'string' ? data.detail : 'The lookup could not complete.'));
+        renderFoodKeeper(data);
+      } catch (error) {
+        status.textContent = error.message || 'Guidance unavailable. No shelf life has been assumed.';
+      } finally { button.disabled = false; }
+    }
+    function renderFoodKeeper(data) {
+      const container = document.getElementById('foodkeeper-results');
+      container.replaceChildren();
+      const products = Array.isArray(data.products) ? data.products.slice(0,5) : [];
+      document.getElementById('foodkeeper-status').textContent = products.length
+        ? `${data.total_matches ?? products.length} matching option(s)${data.truncated ? '; showing the first five' : ''}. No product is automatically selected; review the subtype and storage state.`
+        : 'No matching product found. Try another product name or fewer terms; no shelf life has been assumed.';
+      document.getElementById('foodkeeper-notice').textContent = data.advisory_notice || 'Consumer quality and freshness guidance only; not a commercial food-safety determination.';
+      document.getElementById('foodkeeper-unknowns').textContent = `Confirm before applying any guidance: ${(data.unknowns_required || ['Exact product and subtype','Opened, unopened or thawed state','Relevant dates, package instructions and storage history']).join('; ')}. Donor pickup deadline remains unchanged.`;
+      products.forEach(product => {
+        const card = document.createElement('details');
+        card.className = 'bg-slate-900/70 rounded-lg border border-slate-700 p-3 text-xs';
+        const name = [product.name,product.subtitle].filter(Boolean).join(' — ');
+        card.appendChild(textNode('summary',name || 'Unnamed product','font-semibold text-sky-200 cursor-pointer'));
+        card.appendChild(textNode('p',`Category: ${readable(product.category)} · Subcategory: ${readable(product.subcategory)} · FoodKeeper ID: ${readable(product.product_id)}`,'text-slate-400 mt-2'));
+        const advice = Array.isArray(product.storage_advice) ? product.storage_advice : [];
+        if (!advice.length) card.appendChild(textNode('p','No storage interval is provided for this product. Do not infer one.','text-amber-300 mt-2'));
+        advice.forEach(item => {
+          const row = document.createElement('div');
+          row.className = 'border-t border-slate-700 mt-2 pt-2';
+          row.appendChild(textNode('strong',`${readable(item.storage)} · basis: ${readable(item.basis).replaceAll('_',' ')}`,'block text-slate-200'));
+          row.appendChild(textNode('p',readable(item.raw_value),'text-slate-300 whitespace-pre-wrap'));
+          row.appendChild(textNode('small',`Source field: ${readable(item.raw_field)}`,'text-slate-500 break-words'));
+          card.appendChild(row);
+        });
+        const raw = document.createElement('details');
+        raw.className = 'mt-3 text-slate-400';
+        raw.appendChild(textNode('summary','Inspect original storage fields (null means not supplied)','cursor-pointer'));
+        raw.appendChild(textNode('pre',JSON.stringify(product.raw_storage_fields || {},null,2),'whitespace-pre-wrap break-words mt-2'));
+        card.appendChild(raw);
+        container.appendChild(card);
+      });
     }
     function applyScenario(sc) {
       document.getElementById('input-donor').value = sc.donor_name;

@@ -132,3 +132,40 @@ def test_city_failure_is_explicit_without_fabricated_heat_values(client, monkeyp
     assert response.json()['tracts'] == []
     assert 'private-query-detail' not in response.text
     broker.broker_posting_async.assert_not_called()
+
+
+def test_foodkeeper_endpoint_is_read_only_bounded_and_does_not_call_broker(client, monkeypatch):
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+    http, broker = client
+    payload = {"status": "options", "products": [{"name": "Milk", "subtitle": "Whole", "product_id": "1"}], "selection_required": True, "selected_product_id": None}
+    search = Mock(return_value=payload)
+    monkeypatch.setattr(api, "get_foodkeeper_service", lambda: SimpleNamespace(search=search))
+    response = http.get('/api/foodkeeper', params={'query': ' whole milk '})
+    assert response.status_code == 200
+    assert response.json() == payload
+    search.assert_called_once_with('whole milk', limit=5)
+    broker.broker_posting_async.assert_not_called()
+
+
+@pytest.mark.parametrize('query', ['', 'a', '  ', 'x' * 121])
+def test_foodkeeper_rejects_invalid_query_before_reading_dataset(client, monkeypatch, query):
+    from unittest.mock import Mock
+    http, _ = client
+    service = Mock()
+    monkeypatch.setattr(api, 'get_foodkeeper_service', service)
+    assert http.get('/api/foodkeeper', params={'query': query}).status_code == 422
+    service.assert_not_called()
+
+
+def test_foodkeeper_failure_does_not_assume_life_or_leak_error(client, monkeypatch):
+    from types import SimpleNamespace
+    http, _ = client
+    def fail(*args, **kwargs):
+        raise RuntimeError('private-path-detail')
+    monkeypatch.setattr(api, 'get_foodkeeper_service', lambda: SimpleNamespace(search=fail))
+    response = http.get('/api/foodkeeper', params={'query': 'spinach'})
+    assert response.status_code == 503
+    assert response.json()['products'] == []
+    assert 'No shelf life has been assumed' in response.json()['message']
+    assert 'private-path-detail' not in response.text

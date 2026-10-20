@@ -29,8 +29,11 @@ From the verified student Cloud Shell, with the project already selected:
 bash scripts/deploy_cloud_run.sh
 ```
 
-The script deploys authenticated `seattle-food-broker` in `us-east1`, with zero
-minimum and two maximum instances. It does not enable APIs, change billing,
+The script deploys authenticated `seattle-food-broker` in `us-east1`, with one
+warm minimum and four maximum instances, 2 vCPU/2 GiB per instance, four concurrent
+requests per instance, startup CPU boost, and HTTP startup/liveness probes.
+The warm minimum reduces demo cold starts and consumes resources while idle.
+It does not enable APIs, change billing,
 grant IAM roles or remove any lab service. The deployment identity must already
 have permission to build/deploy; the runtime identity needs existing BigQuery
 job/data read and Vertex access. BigQuery's `a4i_food` dataset location is **US**,
@@ -93,6 +96,32 @@ node tests/test_ui_contract.js
 
 The runtime tests execute a real ADK Runner with a scripted model and fake MCP
 boundary; they are not live cloud proof.
+
+## Shelf-life evidence and evaluation
+
+`GET /api/foodkeeper?query=spinach` searches the committed USDA reference. The UI
+shows explicit product/subtype choices with original purchase/opening/thawing
+basis. It never selects a product, infers remaining freshness or changes the donor
+deadline. This consumer-quality guidance is not commercial cold-chain clearance.
+
+`scripts/audit-manifest.json` records ten hypothetical pallet quantities, explicitly
+not conversions from the starter's crates, loaves, gallons or tons. The audit replays
+all existing source windows from one declared timestamp, including the 720-hour
+essentials case, through the same MCP retrieval and deterministic matcher. It reports
+matches, refusals and errors separately and compares outcomes with the full supplied
+tract table rather than the map's display bounds.
+
+For a Cloud Run Job using this image and the existing runtime identity:
+
+```bash
+python scripts/run_audit_job.py --manifest /app/audit-manifest.json \
+  --evaluated-at "2026-10-20T16:20:00+00:00"
+```
+
+The wrapper starts its own loopback Toolbox, emits a compact JSON report and stops
+only its child processes. Use one task, zero retries and a bounded timeout. The audit
+is replay evidence using assumed quantities and generated operations, not actual
+delivered food or a causal fairness claim.
 
 ## What has to be true of what you build here
 

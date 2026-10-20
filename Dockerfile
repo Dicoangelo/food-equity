@@ -10,7 +10,10 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 COPY --from=toolbox /toolbox /usr/local/bin/toolbox
 COPY agent ./agent
+COPY data/foodkeeper.json ./data/foodkeeper.json
 COPY scripts/serve.py ./scripts/serve.py
+COPY scripts/audit_postings.py scripts/run_audit_job.py ./scripts/
+COPY scripts/audit-manifest.json ./audit-manifest.json
 RUN useradd --system --uid 10001 appuser
 USER appuser
 EXPOSE 8080
