@@ -31,8 +31,12 @@ class Element {
   removeAttribute(name) { delete this[name]; delete this.attributes[name]; }
 }
 const nodes = new Map();
+let focusedId=null;
+Element.prototype.focus=function(){focusedId=this.fixtureId;};
+Element.prototype.scrollIntoView=function(){};
+function content(element) { return [element?.textContent||'',...(element?.children||[]).map(content)].filter(Boolean).join(' '); }
 const context = vm.createContext({
-  document: {createElement: tag => new Element(tag), getElementById: id => {if(!nodes.has(id)) nodes.set(id,new Element('div')); return nodes.get(id);}},
+  document: {createElement: tag => new Element(tag), getElementById: id => {if(!nodes.has(id)) {const element=new Element('div');element.fixtureId=id;nodes.set(id,element);} return nodes.get(id);}},
   window: {}, console, Date, Number, JSON, navigator: {}, TextDecoder, AbortController, setTimeout, clearTimeout,
 });
 vm.runInContext(fs.readFileSync(require('node:path').join(__dirname, '../agent/ui/offer-workflow.js'), 'utf8'), context);
@@ -52,6 +56,17 @@ const req=context.buildRequest();
 assert.equal(req.donor_lat,47.5301);
 assert.equal(req.donor_lon,-122.3210);
 assert.equal(context.buildRequest().deadline_at,req.deadline_at,'Repeated runs must preserve pickup deadline');
+assert.equal(nodes.get('review-deadline').getAttribute('datetime'),req.deadline_at,'Presentation retains the exact shared clock timestamp');
+const summer=context.deadlinePresentation('2026-10-20T20:00:00Z',Date.parse('2026-10-20T18:30:00Z'));
+assert.match(summer.local,/1:00:00 PM PDT/,'October deadline is rendered in Seattle daylight time');
+assert.equal(summer.remaining,'1h 30m remaining.');
+const winter=context.deadlinePresentation('2026-01-20T20:00:00Z',Date.parse('2026-01-20T18:30:00Z'));
+assert.match(winter.local,/12:00:00 PM PST/,'Seattle daylight saving is applied by the timezone formatter');
+assert.equal(context.deadlinePresentation('2026-10-20T20:00:00Z',Date.parse('2026-10-20T20:00:00Z')-1).expired,false);
+assert.equal(context.deadlinePresentation('2026-10-20T20:00:00Z',Date.parse('2026-10-20T20:00:00Z')).expired,true);
+assert.equal(context.deadlinePresentation('invalid'),null);
+context.refreshDeadlineDisplay();
+assert.equal(context.buildRequest().deadline_at,req.deadline_at,'Refreshing a clock display cannot reanchor its deadline');
 const originalDate=context.Date;
 const elapsedNow=Date.now()+30*60000;
 context.Date=class extends Date {static now(){return elapsedNow;}};
@@ -190,7 +205,19 @@ async function testRescueWorkflow() {
     matchCalls.push({url,options});
     return new Promise(resolve=>{resolveMatch=resolve;});
   };
+  // Validation must happen before locking the offer, requesting data or moving focus to progress.
+  nodes.get('input-pallets').value='0';
+  await context.runMatching();
+  assert.equal(matchCalls.length,0);
+  assert.equal(focusedId,'offer-panel');
+  assert.notEqual(nodes.get('input-pallets').disabled,true);
+  assert.equal(nodes.get('progress-history').children.length,0);
+  assert.equal(nodes.get('match-progress').classList.contains('hidden'),true);
+  nodes.get('input-pallets').value=1;
   const first=context.runMatching();
+  assert.equal(focusedId,'review-panel','A valid run makes progress visible before the request resolves');
+  assert.equal(nodes.get('btn-cancel-match').classList.contains('hidden'),false);
+  assert.equal(nodes.get('progress-history').children.length,0,'No stage is invented while awaiting the server');
   assert.equal(nodes.get('review-panel').getAttribute('aria-busy'),'true');
   assert.equal(nodes.get('pending-container').classList.contains('hidden'),true);
   assert.equal(nodes.get('input-pallets').disabled,true);
@@ -205,6 +232,9 @@ async function testRescueWorkflow() {
   assert(choices.every(button=>!button.disabled));
   assert.equal(nodes.get('review-panel').getAttribute('aria-busy'),'false');
   assert.equal(nodes.get('action-retry').classList.contains('hidden'),false);
+  assert.deepEqual(nodes.get('progress-history').children.map(row=>row.getAttribute('data-stage')),['accepted','checking_constraints']);
+  assert(nodes.get('progress-history').children.every(row=>row.getAttribute('aria-current')===undefined));
+  assert.match(nodes.get('progress-outcome').textContent,/could not complete a usable result/);
 
   assert.equal(matchCalls[0].url,'/api/match/stream');
   assert.equal(nodes.get('btn-cancel-match').classList.contains('hidden'),true);
@@ -225,10 +255,19 @@ async function testRescueWorkflow() {
   assert.match(nodes.get('result-description').textContent,/Checking storage/,'Real progress is shown before a terminal result');
   assert.match(nodes.get('result-counts').textContent,/12 retrieved candidates.*shortlist/);
   assert.equal(nodes.get('btn-cancel-match').classList.contains('hidden'),false);
+  assert.deepEqual(nodes.get('progress-history').children.map(row=>row.getAttribute('data-stage')),['checking_constraints'],'Skipped stages must not be invented');
+  assert.match(content(nodes.get('progress-history')),/12 retrieved candidates.*shortlist/);
+  context.matchProgress('untrusted-stage',{candidate_count:999});
+  assert.equal(nodes.get('progress-history').children.length,1);
+  context.matchProgress('checking_constraints',{candidate_count:-1});
+  assert.equal(nodes.get('progress-history').children.length,1,'A repeated stage updates its receipt instead of adding a fake new step');
+  assert.match(content(nodes.get('progress-history')),/12 retrieved candidates/,'Invalid repeated counts cannot replace a valid count');
   context.cancelMatching();
   await pending;
   assert.equal(pendingSignal.aborted,true);
   assert.equal(readerCanceled,true,'Cancel closes the active response reader');
+  assert.match(nodes.get('progress-outcome').textContent,/Check canceled.*No result was used/);
+  assert.equal(nodes.get('progress-history').children.length,1,'Cancellation keeps the received stage history without claiming completion');
   assert.equal(nodes.get('review-panel').getAttribute('data-state'),'canceled');
   assert.equal(nodes.get('input-pallets').disabled,false);
   assert.equal(nodes.get('btn-cancel-match').classList.contains('hidden'),true);
@@ -237,6 +276,8 @@ async function testRescueWorkflow() {
   context.fetch=async()=>matchResponse({status:'no_match'});
   await context.runMatching();
   assert.equal(context.buildRequest().deadline_at,fixedDeadline,'Retry preserves the canceled offer clock');
+  assert.deepEqual(nodes.get('progress-history').children.map(row=>row.getAttribute('data-stage')),['accepted','checking_constraints'],'Retry owns a new history');
+  assert.match(nodes.get('progress-outcome').textContent,/No recipient passed/);
 
   const readStream=context.OfferWorkflow.readMatchStream;
   context.OfferWorkflow.readMatchStream=async(...args)=>{

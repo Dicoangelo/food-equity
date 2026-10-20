@@ -141,6 +141,15 @@ except ImportError:
         from live_intake import router as live_router
 app.include_router(live_router)
 
+try:
+    from .recipient_evidence import router as evidence_router
+except ImportError:
+    try:
+        from agent.recipient_evidence import router as evidence_router
+    except ImportError:
+        from recipient_evidence import router as evidence_router
+app.include_router(evidence_router)
+
 # The browser UI is same-origin. Cross-origin clients must be explicitly configured.
 allowed_origins = [value.strip() for value in os.getenv("CORS_ORIGINS", "").split(",") if value.strip()]
 if allowed_origins:
@@ -421,7 +430,7 @@ def index_dashboard():
     .workflow-step strong { display:block; font-weight:600; font-size:13px; }
     .workflow-step small { display:block; margin-top:2px; font-size:12px; }
     .workspace-grid { display:grid; grid-template-columns:minmax(280px,340px) minmax(0,1fr); gap:20px; padding:24px 28px 32px; max-width:1600px; margin:0 auto; }
-    .workspace-grid > div { min-width:0; display:flex; flex-direction:column; gap:20px; }
+    .workspace-grid > div { min-width:0; align-self:start; display:flex; flex-direction:column; gap:20px; }
     .scenario-choice { min-width:0; text-align:left; display:flex; flex-direction:column; gap:5px; padding:11px 12px; border:1px solid var(--line); border-radius:8px; background:var(--surface); }
     .scenario-choice:hover { border-color:var(--control); background:#f8fafc; }
     .scenario-choice[aria-pressed="true"] { border-color:#8db8cf; background:var(--selected); box-shadow:inset 3px 0 0 var(--accent); }
@@ -437,6 +446,18 @@ def index_dashboard():
     #rescue-app .button-primary { display:inline-flex; align-items:center; justify-content:center; gap:8px; border:1px solid var(--accent); border-radius:8px; padding:11px 15px; background:var(--accent); color:white; font-weight:600; }
     #rescue-app .button-primary:hover { background:var(--accent-hover); }
     #rescue-app .button-primary:disabled { background:var(--inset); border-color:var(--line); color:var(--muted); }
+    .deadline-strip { display:grid; gap:4px; margin-top:14px; padding:12px; border:1px solid var(--line); border-radius:8px; background:var(--inset); font-size:13px; }
+    .deadline-strip time { font-weight:600; font-variant-numeric:tabular-nums; overflow-wrap:anywhere; }
+    .deadline-strip[data-state="expired"] { background:var(--warning-soft); border-color:#e8d3af; color:var(--warning); }
+    .deadline-strip.hidden, .run-progress.hidden { display:none; }
+    .run-progress { margin-top:16px; border-top:1px solid var(--line); padding-top:12px; }
+    .run-progress h3 { margin:0 0 4px; font-size:13px; font-weight:600; }
+    .progress-history { display:grid; gap:8px; padding:0; margin:12px 0; list-style:none; }
+    .progress-history li { display:grid; grid-template-columns:20px minmax(0,1fr); gap:8px; align-items:baseline; color:var(--secondary); font-size:13px; }
+    .progress-history li::before { content:"·"; text-align:center; color:var(--muted); font-weight:700; }
+    .progress-history li[aria-current="step"] { color:var(--accent); font-weight:600; }
+    .progress-history li[aria-current="step"]::before { content:"›"; color:var(--accent); }
+    .progress-history small { display:block; font-size:12px; font-weight:400; color:var(--muted); }
     .status-copy { margin-top:10px; color:var(--muted); font-size:13px; }
     #offer-panel, #review-panel, #handoff-panel, #map-panel, #foodkeeper-panel { scroll-margin-top:24px; }
     #offer-panel label { font-size:13px; color:var(--secondary); }
@@ -452,7 +473,7 @@ def index_dashboard():
     #handoff-panel { background:#f8fafb; }
     #city-caveats { margin-top:8px; }
     #city-caveats p + p { margin-top:8px; }
-    #map-panel { grid-column:1 / -1; }
+    #map-panel { min-width:0; }
     #map { height:430px; width:100%; border:1px solid var(--line); border-radius:10px; }
     #map-controls label { min-height:40px; align-items:center; }
     #map-controls select { max-width:100%; }
@@ -653,6 +674,18 @@ def index_dashboard():
         <h2 id="result-title" class="text-xl font-semibold text-ink">An offer comes first</h2>
         <p id="result-description" class="text-sm text-secondary mt-2">Enter the surplus and pickup window. The broker will retrieve candidates and check storage, capacity and timing before proposing a recipient.</p>
         <p id="result-counts" class="status-copy"></p>
+        <div id="review-clock" class="deadline-strip hidden">
+          <span>Fixed donor pickup deadline · Seattle time</span>
+          <time id="review-deadline"></time>
+          <span id="review-time-left"></span>
+          <small>Only a donor-confirmed pickup-window change replaces this clock.</small>
+        </div>
+        <div id="match-progress" class="run-progress hidden">
+          <h3>Live check activity</h3>
+          <p class="text-xs text-muted">Only stages reported by the broker appear here. The final result determines whether a proposal is viable.</p>
+          <ol id="progress-history" class="progress-history" aria-label="Reported broker stages"></ol>
+          <p id="progress-outcome" class="text-xs text-secondary"></p>
+        </div>
         <button id="btn-cancel-match" class="action-secondary hidden mt-3" type="button" onclick="cancelMatching()">Cancel check</button>
         <div id="result-actions" class="result-actions hidden">
           <button id="action-review-offer" class="action-secondary" onclick="focusSection('offer-panel')">Review offer</button>
@@ -748,9 +781,7 @@ def index_dashboard():
       </details>
 
 
-    </div>
-
-      <!-- Map Card -->
+      <!-- Map Card: part of the working results column. -->
       <div id="map-panel" class="surface-card rounded-xl p-4 border border-line flex flex-col gap-3">
         <div class="flex flex-wrap gap-3 justify-between items-center px-1">
           <div class="flex items-center gap-2 text-sm font-semibold text-ink">
@@ -822,6 +853,7 @@ def index_dashboard():
         <p class="text-xs text-muted">Recipient points may represent ZIP-level locations. Confirm actual collection address, acceptance, storage and pickup with the recipient. Census indicators describe neighborhoods, not individual eligibility.</p>
 
       </div>
+    </div>
 
   </main>
   </div>
@@ -847,6 +879,8 @@ def index_dashboard():
     let activeMatchController = null;
     let matchStopReason = null;
     let scenarioButtons = [];
+    const receivedStages = [];
+    let deadlineTicker = null;
     const offerFieldIds = ['input-donor','input-text','input-storage','input-pallets','input-hours'];
 
     function textNode(tag, text, className = '') {
@@ -908,6 +942,8 @@ def index_dashboard():
       voice.draft = null;
       refreshVoiceControls();
       currentPayload = null;
+      resetMatchProgress(false);
+      refreshDeadlineDisplay();
       document.getElementById('brief-container').classList.add('hidden');
       document.getElementById('run-evidence').classList.add('hidden');
       document.getElementById('external-directions').classList.add('hidden');
@@ -1211,9 +1247,7 @@ def index_dashboard():
       selectedOrigin = {latitude:fields.donor_lat,longitude:fields.donor_lon};
       offerClock.apply(fields.deadline_at, fields.hours_remaining);
       document.getElementById('origin-note').textContent = `Reviewed origin: ${fields.donor_lat}, ${fields.donor_lon}. Confirm the actual pickup location; any demo coordinates remain approximate.`;
-      const clock = document.getElementById('voice-clock-note');
-      clock.textContent = `Fixed pickup deadline: ${fields.deadline_at}. Editing the hours field explicitly replaces this clock; other offer edits preserve it.`;
-      clock.classList.remove('hidden');
+      refreshDeadlineDisplay();
       setStatus('Voice draft applied for review. The exact deadline is preserved. No match or outreach has been requested.');
       if (typeof RecipientExplorer !== 'undefined') RecipientExplorer.refresh();
       focusSection('offer-panel');
@@ -1455,7 +1489,7 @@ def index_dashboard():
       document.getElementById('input-hours').value = sc.hours_remaining;
       selectedOrigin = {latitude: sc.donor_lat, longitude: sc.donor_lon};
       offerClock.reset();
-      document.getElementById('voice-clock-note').classList.add('hidden');
+      refreshDeadlineDisplay();
       document.getElementById('origin-note').textContent = `Origin: ${sc.donor_name} demo coordinates. Pallet quantity is a scenario assumption; confirm the actual volume.`;
       setStatus(sc.notes || 'Scenario loaded. Review the offer, then run a live match.');
       if (typeof RecipientExplorer !== 'undefined') RecipientExplorer.refresh();
@@ -1506,10 +1540,69 @@ def index_dashboard():
       if (!Number.isFinite(req.pallet_count) || req.pallet_count <= 0 || req.pallet_count > 10000) throw new Error('Enter a positive pallet quantity, up to 10,000.');
       if (!Number.isFinite(req.hours_remaining) || req.hours_remaining <= 0 || req.hours_remaining > 168) throw new Error('Enter a pickup window greater than zero and at most 168 hours.');
       req.deadline_at = offerClock.forOffer(req.hours_remaining);
-      const clock = document.getElementById('voice-clock-note');
-      clock.textContent = `Fixed pickup deadline: ${req.deadline_at}. Only change the pickup window when the donor confirms a new deadline.`;
-      clock.classList.remove('hidden');
+      refreshDeadlineDisplay();
       return req;
+    }
+    function deadlinePresentation(deadline, now = Date.now()) {
+      const instant = Date.parse(deadline);
+      if (typeof deadline !== 'string' || !Number.isFinite(instant)) return null;
+      const local = new Intl.DateTimeFormat('en-US', {timeZone:'America/Los_Angeles',
+        weekday:'short',month:'short',day:'numeric',hour:'numeric',minute:'2-digit',second:'2-digit',timeZoneName:'short'}).format(new Date(instant));
+      const expired = instant <= now;
+      const seconds = Math.floor((instant - now) / 1000);
+      const minutes = Math.floor(seconds / 60);
+      const remaining = expired ? 'Deadline passed. Confirm a new window with the donor before retrying.'
+        : minutes < 1 ? 'Less than a minute remains.'
+        : `${Math.floor(minutes / 60) ? Math.floor(minutes / 60) + 'h ' : ''}${minutes % 60}m remaining.`;
+      return {local, remaining, expired};
+    }
+    function refreshDeadlineDisplay() {
+      // Presentation reads the existing clock; it never establishes or extends it.
+      const presentation = deadlinePresentation(offerClock.deadline);
+      const panel = document.getElementById('review-clock');
+      const note = document.getElementById('voice-clock-note');
+      panel.classList.toggle('hidden', !presentation);
+      note.classList.toggle('hidden', !presentation);
+      if (!presentation) return;
+      panel.setAttribute('data-state', presentation.expired ? 'expired' : 'active');
+      const time = document.getElementById('review-deadline');
+      time.textContent = presentation.local;
+      time.setAttribute('datetime', offerClock.deadline);
+      time.setAttribute('title', offerClock.deadline);
+      document.getElementById('review-time-left').textContent = presentation.remaining;
+      note.textContent = `Fixed pickup deadline: ${presentation.local} (Seattle). Other offer edits and retries preserve this clock.`;
+    }
+    function renderMatchProgress(active = true) {
+      const list = document.getElementById('progress-history');
+      list.replaceChildren();
+      receivedStages.forEach((entry, index) => {
+        const row = document.createElement('li');
+        row.setAttribute('data-stage', entry.stage);
+        if (active && index === receivedStages.length - 1) row.setAttribute('aria-current','step');
+        const body = textNode('div', OfferWorkflow.stages[entry.stage]);
+        if (entry.count !== null) body.appendChild(textNode('small',`${entry.count} retrieved candidates · shortlist only`));
+        row.appendChild(body);
+        list.appendChild(row);
+      });
+    }
+    function resetMatchProgress(visible) {
+      receivedStages.length = 0;
+      renderMatchProgress(false);
+      document.getElementById('match-progress').classList.toggle('hidden', !visible);
+      document.getElementById('progress-outcome').textContent = visible ? 'Waiting for the first broker stage report…' : '';
+    }
+    function finishMatchProgress(outcome) {
+      renderMatchProgress(false);
+      const summaries = {
+        success:'Result received. Review the proposal and confirm recipient availability.',
+        draft:'Fallback result received. Review the draft; recipient availability remains unconfirmed.',
+        no_match:'Result received. No recipient passed the current checks.',
+        no_viable_match:'Result received. No recipient passed the current checks.',
+        blocked:'The broker could not complete a usable result. Stage reports alone are not a match.',
+        canceled:'Check canceled. No result was used; received stages remain visible for context.',
+        error:'The check did not finish. No result was used; retry retains the fixed deadline.',
+      };
+      document.getElementById('progress-outcome').textContent = summaries[outcome] || summaries.error;
     }
     function cancelMatching() {
       if (!matchInFlight || !activeMatchController) return;
@@ -1518,17 +1611,34 @@ def index_dashboard():
     }
     function matchProgress(stage, details = {}) {
       if (!matchInFlight || !Object.hasOwn(OfferWorkflow.stages, stage)) return;
+      const count = Number.isSafeInteger(details.candidate_count) && details.candidate_count >= 0 && details.candidate_count <= 1000000 ? details.candidate_count : null;
+      const previous = receivedStages.find(entry => entry.stage === stage);
+      if (previous) { if (count !== null) previous.count = count; }
+      else receivedStages.push({stage, count});
+      renderMatchProgress();
+      document.getElementById('progress-outcome').textContent = 'Awaiting the final broker result. No handoff is confirmed.';
+      refreshDeadlineDisplay();
       const message = OfferWorkflow.stages[stage];
       document.getElementById('result-description').textContent = message;
       setStatus(message);
-      if (details.candidate_count !== null && Number.isSafeInteger(details.candidate_count)) {
+      if (count !== null) {
         document.getElementById('result-counts').textContent =
-          `${details.candidate_count} retrieved candidates. Checks apply to this shortlist.`;
+          `${count} retrieved candidates. Checks apply to this shortlist.`;
       }
     }
     async function runMatching() {
       if (matchInFlight) return;
+      let reqBody;
+      try { reqBody = buildRequest(); }
+      catch (error) {
+        resetMatchProgress(false);
+        refreshDeadlineDisplay();
+        setStatus(error.message || 'Review the offer fields before running a match.', true);
+        focusSection('offer-panel');
+        return;
+      }
       matchInFlight = true;
+      resetMatchProgress(true);
       lockOffer(true);
       const btn = document.getElementById('btn-match');
       const cancel = document.getElementById('btn-cancel-match');
@@ -1552,9 +1662,9 @@ def index_dashboard():
       document.getElementById('external-directions').classList.add('hidden');
       document.getElementById('external-directions').removeAttribute('href');
       try {
-        const reqBody = buildRequest();
         activeMatchController = new AbortController();
         cancel.classList.remove('hidden');
+        focusSection('review-panel');
         requestTimer = setTimeout(() => {
           matchStopReason = 'timeout';
           activeMatchController?.abort();
@@ -1570,6 +1680,7 @@ def index_dashboard():
         }
         currentPayload = data;
         renderResults(data);
+        finishMatchProgress(data.status);
         focusSection('review-panel');
       } catch (err) {
         const canceled = matchStopReason === 'canceled';
@@ -1580,6 +1691,7 @@ def index_dashboard():
         document.getElementById('runtime-status').textContent = canceled ? 'Canceled' : 'Failed';
         reviewState(canceled ? 'canceled' : 'blocked',canceled ? 'Check canceled' : 'The live check did not finish',message);
         setWorkflow('review');
+        finishMatchProgress(canceled ? 'canceled' : 'error');
         document.getElementById('decoys-list').replaceChildren(textNode('p', 'No current result. Previous results have been cleared.'));
       } finally {
         clearTimeout(requestTimer);
@@ -1758,8 +1870,12 @@ def index_dashboard():
       loadVoiceConfig();
       setStatus('Choose a scenario or enter an offer, then run a live match.');
       setWorkflow('offer');
+      refreshDeadlineDisplay();
+      deadlineTicker = setInterval(refreshDeadlineDisplay, 1000);
     };
     window.addEventListener?.('pagehide', () => {
+      if (deadlineTicker !== null) clearInterval(deadlineTicker);
+      deadlineTicker = null;
       cancelMatching();
       stopVoiceSession('Session closed.');
     });
