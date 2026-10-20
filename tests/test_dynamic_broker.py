@@ -2,6 +2,7 @@
 import json
 import asyncio
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 
 import pytest
 from fastapi import FastAPI
@@ -9,6 +10,8 @@ from fastapi.testclient import TestClient
 from google.adk.models.base_llm import BaseLlm
 from google.adk.models.llm_response import LlmResponse
 from google.genai import types
+from google.genai import _transformers
+from pydantic import ValidationError
 
 from agent import free_text_intake as intake
 from agent.brief_synthesis import evidence_cards, literal_food_terms, selected_cards, personalized_sms
@@ -81,7 +84,25 @@ def test_product_mentions_do_not_assert_negated_goods_or_ingredients(posting):
 class ExtractModel(BaseLlm):
     model: str = "offline"
     async def generate_content_async(self, llm_request, stream=False):
+        # Exercise the actual installed SDK's Vertex schema conversion. A fake
+        # model alone previously missed exclusiveMinimum failing before HTTP.
+        schema = _transformers.t_schema(SimpleNamespace(vertexai=True), llm_request.config.response_schema)
+        assert schema.properties["pallet_count"].minimum == 0
+        assert schema.properties["pickup_window_hours"].minimum == 0
         yield LlmResponse(content=types.Content(role="model", parts=[types.Part(text=json.dumps(EXTRACTED))]))
+
+
+@pytest.mark.parametrize("field", ["pallet_count", "pickup_window_hours"])
+@pytest.mark.parametrize("value", [0, -1, float("nan"), float("inf"), float("-inf"), "2", True])
+def test_vertex_compatible_schema_keeps_strict_positive_amount_validation(field, value):
+    with pytest.raises(ValidationError):
+        intake.ExtractedAlert.model_validate({field: value})
+
+
+@pytest.mark.parametrize("field", ["pallet_count", "pickup_window_hours"])
+def test_positive_fraction_and_missing_amount_remain_valid(field):
+    assert getattr(intake.ExtractedAlert.model_validate({field: 0.5}), field) == 0.5
+    assert getattr(intake.ExtractedAlert.model_validate({field: None}), field) is None
 
 
 @pytest.mark.asyncio
@@ -93,7 +114,7 @@ async def test_real_adk_extracts_using_structured_schema_without_any_tools():
     assert result["quoted_evidence"]["pallet_count"] == "Two pallets"
 
 
-def test_parse_endpoint_reports_failure_without_disclosing_provider_details(monkeypatch):
+def test_parse_endpoint_reports_failure_without_disclosing_provider_details(monkeypatch, caplog):
     class Failed:
         async def parse(self, request):
             raise RuntimeError("private provider details")
@@ -104,6 +125,8 @@ def test_parse_endpoint_reports_failure_without_disclosing_provider_details(monk
     assert response.status_code == 503
     assert response.headers["cache-control"] == "no-store"
     assert "private" not in response.text and response.json()["sent"] is False
+    assert "surplus_intake_failed category=provider_or_runtime" in caplog.text
+    assert "private provider details" not in caplog.text
 
 
 ROWS = [

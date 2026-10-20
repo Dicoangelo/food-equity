@@ -2,6 +2,7 @@
 import asyncio
 import hashlib
 import json
+import logging
 import os
 import re
 from datetime import datetime, timedelta, timezone
@@ -16,7 +17,7 @@ from google.adk.models.google_llm import Gemini
 from google.adk.runners import Runner
 from google.adk.sessions import InMemorySessionService
 from google.genai import types
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 try:
     from .live_intake import explicit_amount, normalized
@@ -27,6 +28,7 @@ except ImportError:
 
 router = APIRouter()
 MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+logger = logging.getLogger(__name__)
 
 
 class AlertRequest(BaseModel):
@@ -47,10 +49,19 @@ class ExtractedAlert(BaseModel):
     food_terms: list[str] = Field(default_factory=list, max_length=3)
     required_storage: str | None = None
     storage_quote: str = Field(default="", max_length=400)
-    pallet_count: float | None = Field(default=None, gt=0, le=10000)
+    # Vertex's Schema transport supports minimum, not exclusiveMinimum. Keep
+    # the positive-only application constraint in a validator after decoding.
+    pallet_count: float | None = Field(default=None, ge=0, le=10000)
     quantity_quote: str = Field(default="", max_length=400)
-    pickup_window_hours: float | None = Field(default=None, gt=0, le=168)
+    pickup_window_hours: float | None = Field(default=None, ge=0, le=168)
     deadline_quote: str = Field(default="", max_length=400)
+
+    @field_validator("pallet_count", "pickup_window_hours")
+    @classmethod
+    def positive_when_supplied(cls, value):
+        if value is not None and value <= 0:
+            raise ValueError("An explicitly supplied amount must be greater than zero")
+        return value
 
 
 def quoted(value, posting):
@@ -173,7 +184,14 @@ async def parse_alert(request: AlertRequest):
     try:
         result = await get_intake().parse(request)
         return JSONResponse(result, headers={"Cache-Control": "no-store"})
-    except Exception:
+    except Exception as exc:
+        # Stable categories aid release diagnostics without logging the alert,
+        # credentials, model response, exception text or provider request data.
+        category = ("timeout" if isinstance(exc, TimeoutError)
+                    else "schema_validation" if isinstance(exc, ValidationError)
+                    else "invalid_json" if isinstance(exc, json.JSONDecodeError)
+                    else "provider_or_runtime")
+        logger.warning("surplus_intake_failed category=%s", category)
         return JSONResponse({
             "status": "unavailable", "requires_review": True, "sent": False,
             "message": "Alert extraction did not complete. Your offer is unchanged; continue with the form.",
