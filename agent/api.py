@@ -384,9 +384,54 @@ def view_context_script():
 
 
 
+@app.get("/ui/intake-review.js", include_in_schema=False)
+def intake_review_script():
+    return FileResponse(Path(__file__).parent / "ui/intake-review.js", media_type="text/javascript")
+
+
+@app.get("/ui/intake-review.css", include_in_schema=False)
+def intake_review_style():
+    return FileResponse(Path(__file__).parent / "ui/intake-review.css", media_type="text/css")
+
+
+@app.get("/ui/companion.js", include_in_schema=False)
+def companion_script():
+    return FileResponse(Path(__file__).parent / "ui/companion.js", media_type="text/javascript")
+
+
+@app.get("/ui/cinematic-intro.js", include_in_schema=False)
+def cinematic_intro_script():
+    return FileResponse(Path(__file__).parent / "ui/cinematic-intro.js", media_type="text/javascript")
+
+
+@app.get("/ui/cinematic-intro.css", include_in_schema=False)
+def cinematic_intro_style():
+    return FileResponse(Path(__file__).parent / "ui/cinematic-intro.css", media_type="text/css")
+
+
+@app.get("/ui/food-equity-story-v1.mp4", include_in_schema=False)
+def cinematic_intro_video():
+    return FileResponse(Path(__file__).parent / "ui/food-equity-story-v1.mp4", media_type="video/mp4")
+
+
+@app.get("/ui/companion.css", include_in_schema=False)
+def companion_style():
+    return FileResponse(Path(__file__).parent / "ui/companion.css", media_type="text/css")
+
+
 @app.get("/ui/workspace.css", include_in_schema=False)
 def workspace_style():
     return FileResponse(Path(__file__).parent / "ui/workspace.css", media_type="text/css")
+
+
+@app.get("/ui/food-rescue-network.png", include_in_schema=False)
+def network_illustration():
+    return FileResponse(Path(__file__).parent / "ui/food-rescue-network.png", media_type="image/png")
+
+
+@app.get("/ui/review-crate-spot.png", include_in_schema=False)
+def review_illustration():
+    return FileResponse(Path(__file__).parent / "ui/review-crate-spot.png", media_type="image/png")
 
 
 @app.get("/ui/workspace.js", include_in_schema=False)
@@ -414,6 +459,9 @@ def index_dashboard():
   <script src="https://unpkg.com/leaflet.heat@0.2.0/dist/leaflet-heat.js"></script>
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
   <link rel="stylesheet" href="/ui/workspace.css">
+  <link rel="stylesheet" href="/ui/companion.css">
+  <link rel="stylesheet" href="/ui/cinematic-intro.css">
+  <link rel="stylesheet" href="/ui/intake-review.css">
   <link rel="stylesheet" href="/ui/recipient-explorer.css">
 </head>
 <body id="rescue-app">
@@ -485,6 +533,7 @@ def index_dashboard():
           <p id="alert-intake-status" role="status" aria-live="polite" class="text-xs text-secondary mt-2"></p>
           <div id="alert-intake-review" class="hidden surface-inset rounded-lg p-3 mt-2">
             <div id="alert-intake-details" class="text-xs text-secondary"></div>
+            <div id="intake-evidence-review"></div>
             <button id="btn-alert-apply" type="button" class="action-secondary mt-2" onclick="applySurplusAlert()">Apply reviewed details</button>
           </div>
         </div>
@@ -505,9 +554,11 @@ def index_dashboard():
                    class="w-full surface-field border border-line rounded-lg px-2.5 py-2 text-sm text-ink focus:outline-none" />
           </div>
           <div>
-            <label for="input-hours" class="block text-xs text-muted mb-1">Window (hours)</label>
+            <label id="pickup-window-label" for="input-hours" class="block text-xs text-muted mb-1">Window (hours)</label>
             <input id="input-hours" oninput="offerChanged('hours')" type="number" min="0.01" max="168" step="0.5" value="6.0"
                    class="w-full surface-field border border-line rounded-lg px-2.5 py-2 text-sm text-ink focus:outline-none" />
+            <output id="pickup-window-summary" aria-labelledby="pickup-window-label" class="hidden block text-sm text-ink"></output>
+            <button id="edit-pickup-window" type="button" class="hidden action-secondary mt-2" onclick="editPickupWindow()">Edit window</button>
           </div>
         </div>
 
@@ -595,25 +646,25 @@ def index_dashboard():
           <p class="text-xs text-muted mt-2">Neighborhood evidence is approximate: ACS tract indicators describe the area near the recipient's ZIP-centroid location, not individual need or the recipient's actual service catchment. Confirm whom the recipient serves.</p>
         </div>
 
+        <div id="recipient-evidence-comparison"></div>
+
         <!-- Outreach Drafts -->
         <div id="handoff-panel" tabindex="-1" class="surface-inset p-4 rounded-lg border border-line flex flex-col gap-3">
           <div class="flex flex-wrap gap-3 justify-between items-center">
             <h3 class="text-xs font-semibold text-secondary uppercase flex items-center gap-2">
               <i class="fa-solid fa-paper-plane text-positive"></i> 3. Prepare the handoff
             </h3>
-            <button onclick="copyMatchBrief()" class="action-secondary">Copy match brief</button>
-            <button onclick="copyOutreach()" class="action-secondary">
-              <i class="fa-solid fa-copy"></i> Copy SMS
-            </button>
+            <button onclick="copyMatchBrief()" class="action-secondary">Copy reviewed handoff</button>
           </div>
           <p class="text-xs text-muted">Confirm recipient acceptance, current storage/capacity and pickup ETA. Check the actual address before dispatch. These drafts are ready for your review; nothing has been sent or reserved.</p>
+          <div id="handoff-evidence-review" tabindex="-1"></div>
           <p id="handoff-feedback" role="status" aria-live="polite" class="text-xs text-positive"></p>
           <div>
             <span class="text-xs text-muted uppercase font-semibold">Coordinator SMS draft (may use multiple segments):</span>
             <div id="brief-sms" class="surface-inset p-2.5 rounded border border-line text-xs text-positive font-mono mt-1"></div>
           </div>
           <div>
-            <div class="flex flex-wrap justify-between items-center gap-2"><span class="text-xs text-muted font-semibold">Email outreach draft</span><button onclick="copyEmail()" class="action-secondary">Copy email</button></div>
+            <div class="flex flex-wrap justify-between items-center gap-2"><span class="text-xs text-muted font-semibold">Email outreach draft</span></div>
             <pre id="brief-email" class="surface-inset p-3 rounded border border-line text-xs text-secondary font-sans whitespace-pre-wrap mt-1"></pre>
           </div>
         </div>
@@ -806,7 +857,33 @@ def index_dashboard():
     let scenarioButtons = [];
     const receivedStages = [];
     let deadlineTicker = null;
+    let pickupWindowEditing = false;
     const offerFieldIds = ['input-donor','input-text','input-storage','input-pallets','input-hours'];
+    let foodReview = null;
+    let intakeReviewTicket = null;
+    // Pure projection: reading a review never starts or extends the pickup clock.
+    function reviewSnapshot() {
+      const value = id => document.getElementById(id).value;
+      return {offer: {posting_text:value('input-text'), donor_name:value('input-donor'),
+        pallet_count:value('input-pallets'), required_storage:value('input-storage'),
+        hours_remaining:value('input-hours'), donor_lat:selectedOrigin.latitude,
+        donor_lon:selectedOrigin.longitude, deadline_at:offerClock.deadline},
+        result:currentPayload, sources:typeof ViewContext === 'undefined' ? [] : ViewContext.sources(),
+        locked:matchInFlight, revision:typeof ViewContext === 'undefined' ? 0 : ViewContext.snapshot().offer_revision};
+    }
+    function refreshFoodReview() {
+      foodReview?.refresh();
+      document.getElementById('btn-alert-apply').disabled = matchInFlight || !foodReview?.canApply();
+    }
+    function initializeFoodReview() {
+      if (typeof FoodEquityReview === 'undefined') return;
+      foodReview = FoodEquityReview.create({snapshot:reviewSnapshot, containers:{
+        intake:document.getElementById('intake-evidence-review'),
+        comparison:document.getElementById('recipient-evidence-comparison'),
+        handoff:document.getElementById('handoff-evidence-review')},
+        onChange:state => { document.getElementById('btn-alert-apply').disabled = matchInFlight || !state.canApply; }});
+      refreshFoodReview();
+    }
     const alertIntake = AlertIntake.create({
       snapshot: () => ({posting_text:document.getElementById('input-text').value,
         deadline_at:offerClock.deadline, locked:matchInFlight}),
@@ -815,7 +892,18 @@ def index_dashboard():
         const box = document.getElementById('alert-intake-details');
         box.replaceChildren();
         document.getElementById('alert-intake-review').classList.toggle('hidden', !draft);
-        if (!draft) return;
+        if (!draft) {
+          foodReview?.clearIntake(message.startsWith('Gemini is extracting') ? 'loading' : 'cleared');
+          refreshFoodReview();
+          return;
+        }
+        if (foodReview && !foodReview.receiveIntake(draft, intakeReviewTicket)) {
+          document.getElementById('alert-intake-review').classList.add('hidden');
+          document.getElementById('alert-intake-status').textContent = 'The offer or evidence changed. Extract its current details again.';
+          refreshFoodReview();
+          return;
+        }
+        if (foodReview) return; // The evidence panel renders the supported statements and owner tasks.
         const f = draft.fields;
         box.appendChild(textNode('p', `Products: ${(draft.food_terms || []).join(', ') || 'Confirm exact products'}`));
         box.appendChild(textNode('p', `Declared storage: ${f.required_storage || 'Not supplied'} · Pallets: ${f.pallet_count ?? 'Not supplied'}`));
@@ -846,8 +934,18 @@ def index_dashboard():
         focusSection('offer-panel');
       },
     });
-    function analyzeSurplusAlert() { return alertIntake.analyze(); }
-    function applySurplusAlert() { return alertIntake.applyReviewed(); }
+    function analyzeSurplusAlert() {
+      if (matchInFlight) return;
+      intakeReviewTicket = foodReview?.beginIntake() || null;
+      return alertIntake.analyze();
+    }
+    function applySurplusAlert() {
+      if (!foodReview) {
+        document.getElementById('alert-intake-status').textContent = 'Review tools are unavailable. Enter the donor details directly.';
+        return false;
+      }
+      return foodReview.applyReviewed(() => alertIntake.applyReviewed());
+    }
 
     function textNode(tag, text, className = '') {
       const node = document.createElement(tag);
@@ -883,8 +981,9 @@ def index_dashboard():
       offerFieldIds.forEach(id => { document.getElementById(id).disabled = locked; });
       scenarioButtons.forEach(button => { button.disabled = locked; });
       document.getElementById('btn-match').disabled = locked;
+      document.getElementById('edit-pickup-window').disabled = locked;
       document.getElementById('btn-alert-intake').disabled = locked;
-      document.getElementById('btn-alert-apply').disabled = locked;
+      refreshFoodReview();
       refreshVoiceControls();
     }
     function reviewState(state, title, description, counts = '') {
@@ -903,7 +1002,10 @@ def index_dashboard():
     }
     function offerChanged(field) {
       if (matchInFlight) return;
+      pickupWindowEditing = false;
       alertIntake.invalidate(field === 'hours');
+      intakeReviewTicket = null;
+      foodReview?.invalidate('The offer changed. Review its current details again.');
       if (field === 'hours') {
         offerClock.reset();
         document.getElementById('voice-clock-note').classList.add('hidden');
@@ -1757,10 +1859,28 @@ def index_dashboard():
         : `${Math.floor(minutes / 60) ? Math.floor(minutes / 60) + 'h ' : ''}${minutes % 60}m remaining.`;
       return {local, remaining, expired};
     }
+    function editPickupWindow() {
+      if (matchInFlight) return;
+      pickupWindowEditing=true;
+      refreshDeadlineDisplay();
+      const input=document.getElementById('input-hours');
+      input.focus?.();input.select?.();
+      setStatus('Enter a newly confirmed pickup window to replace the deadline. Opening this editor alone leaves the current deadline unchanged.');
+    }
     function refreshDeadlineDisplay() {
       refreshVoiceDraftClock();
+      refreshFoodReview();
       // Presentation reads the existing clock; it never establishes or extends it.
       const presentation = deadlinePresentation(offerClock.deadline);
+      const fixed=!!presentation && !pickupWindowEditing;
+      document.getElementById('input-hours').classList.toggle('hidden',fixed);
+      document.getElementById('pickup-window-label').textContent=fixed ? 'Time remaining' : 'Window (hours)';
+      document.getElementById('pickup-window-label').setAttribute('for',fixed ? 'pickup-window-summary' : 'input-hours');
+      const summary=document.getElementById('pickup-window-summary');
+      summary.classList.toggle('hidden',!fixed);
+      summary.textContent=presentation ? (presentation.expired ? 'Deadline passed' : presentation.remaining) : '';
+      const edit=document.getElementById('edit-pickup-window');
+      edit.classList.toggle('hidden',!fixed);edit.disabled=matchInFlight;
       const panel = document.getElementById('review-clock');
       const note = document.getElementById('voice-clock-note');
       panel.classList.toggle('hidden', !presentation);
@@ -1840,6 +1960,9 @@ def index_dashboard():
         return;
       }
       matchInFlight = true;
+      alertIntake.invalidate();
+      intakeReviewTicket = null;
+      foodReview?.clearIntake('matching');
       resetMatchProgress(true);
       lockOffer(true);
       const btn = document.getElementById('btn-match');
@@ -2050,26 +2173,29 @@ def index_dashboard():
         '', data.provenance_warning || 'Dataset profiles require recipient confirmation. Nothing has been sent or reserved.'
       ].join('\n');
     }
-    async function copyHandoff(text, label) {
-      if (!currentPayload || !currentPayload.winner || !text) return;
-      try {
-        await navigator.clipboard.writeText(text);
-        document.getElementById('handoff-feedback').textContent = `${label} copied. Review it before sending; no outreach was sent by this app.`;
-        setWorkflow('handoff');
-      } catch (_) {
-        document.getElementById('handoff-feedback').textContent = 'Clipboard unavailable. Select and copy the draft manually.';
+    async function copyHandoff() {
+      if (!foodReview) {
+        document.getElementById('handoff-feedback').textContent = 'Review tools are unavailable. Reload before copying a handoff.';
+        return false;
       }
+      const outcome = await foodReview.copyHandoff();
+      document.getElementById('handoff-feedback').textContent = foodReview.state().feedback;
+      if (outcome.ok) setWorkflow('handoff');
+      else focusSection('handoff-evidence-review');
+      return outcome.ok;
     }
-    async function copyOutreach() { await copyHandoff(document.getElementById('brief-sms').textContent,'SMS draft'); }
-    async function copyEmail() { await copyHandoff(document.getElementById('brief-email').textContent,'Email draft'); }
-    async function copyMatchBrief() { await copyHandoff(handoffText(currentPayload),'Match brief'); }
+    async function copyOutreach() { return copyHandoff(); }
+    async function copyEmail() { return copyHandoff(); }
+    async function copyMatchBrief() { return copyHandoff(); }
     async function copyJsonPayload() {
       if (!currentPayload) return;
       try { await navigator.clipboard.writeText(JSON.stringify(currentPayload, null, 2)); setStatus('Result JSON copied.'); }
       catch (_) { setStatus('Clipboard unavailable. Select and copy the JSON manually.', true); }
     }
     window.onload = () => {
+      initializeFoodReview();
       if (typeof ViewContext !== 'undefined') ViewContext.onChange(() => {
+        refreshFoodReview();
         if (!voice.ready || voice.socket?.readyState !== 1) return;
         flushVoicePlayback();
         if (ViewActionReceipts.busy()) {
@@ -2108,6 +2234,9 @@ def index_dashboard():
   <script src="/ui/view-context.js"></script>
   <script src="/ui/workspace.js"></script>
   <script src="/ui/recipient-explorer.js"></script>
+  <script src="/ui/companion.js"></script>
+  <script src="/ui/cinematic-intro.js"></script>
+  <script src="/ui/intake-review.js"></script>
 
 </body>
 </html>

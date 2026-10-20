@@ -1,0 +1,35 @@
+.fe-review { color: var(--text-primary, #1c2925); min-width: 0; }
+.fe-review-title { font-size: 1rem; line-height: 1.35; font-weight: 700; margin: 0 0 .4rem; }
+.fe-review-intro, .fe-review-empty { color: var(--text-secondary, #58645e); font-size: .82rem; line-height: 1.55; margin: 0 0 1rem; }
+.fe-review-facts, .fe-review-comparison { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 230px), 1fr)); gap: .75rem; }
+.fe-review-fact, .fe-review-candidate, .fe-review-handoff-summary { min-width: 0; padding: 1rem; border: 1px solid var(--border, #dce3dc); background: var(--surface, #fff); border-radius: 12px; }
+.fe-review-label { display: block; color: var(--text-secondary, #58645e); font-size: .7rem; font-weight: 700; letter-spacing: .045em; text-transform: uppercase; }
+.fe-review-value { font-weight: 650; margin: .4rem 0 .65rem; overflow-wrap: anywhere; }
+.fe-review-quote { margin: .5rem 0; border-left: 3px solid var(--accent, #386c4d); padding: .3rem .7rem; font-size: .82rem; line-height: 1.5; overflow-wrap: anywhere; }
+.fe-review-quote::before { content: '“'; } .fe-review-quote::after { content: '”'; }
+.fe-review-meta, .fe-review-evidence-line { color: var(--text-secondary, #58645e); font-size: .76rem; line-height: 1.5; margin: .4rem 0; overflow-wrap: anywhere; }
+.fe-review-check { display: flex; align-items: flex-start; gap: .55rem; font-size: .8rem; line-height: 1.5; min-height: 32px; margin-top: .8rem; cursor: pointer; }
+.fe-review-check input { flex: 0 0 auto; width: 17px; height: 17px; margin: .15rem 0 0; accent-color: var(--accent, #386c4d); }
+.fe-review-check:focus-within { outline: 2px solid var(--accent, #386c4d); outline-offset: 4px; border-radius: 3px; }
+.fe-review-subtitle { font-size: .9rem; line-height: 1.4; margin: .6rem 0; overflow-wrap: anywhere; }
+.fe-review-tasks { list-style: none; margin: .8rem 0 1rem; padding: 0; display: grid; gap: .5rem; }
+.fe-review-tasks li { display: flex; align-items: flex-start; gap: .6rem; font-size: .8rem; line-height: 1.5; overflow-wrap: anywhere; }
+.fe-review-owner { white-space: nowrap; min-width: max-content; flex: 0 0 80px; color: var(--text-secondary, #58645e); font-size: .68rem; font-weight: 700; text-transform: uppercase; padding-top: .15rem; }
+.fe-review-decision { display: inline-block; background: var(--surface-muted, #eef3ed); color: var(--text-primary, #1c2925); border-radius: 4px; padding: .25rem .45rem; font-size: .7rem; margin: .25rem 0 .5rem; }
+.fe-review-warning { color: var(--warning-text, #79530f); font-size: .78rem; line-height: 1.5; margin: .5rem 0; overflow-wrap: anywhere; }
+.fe-review-offer { font-size: .84rem; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; margin: .5rem 0; }
+.fe-review-deadline { font-size: .8rem; font-weight: 650; overflow-wrap: anywhere; }
+.fe-review-result-check { margin: .9rem 0; padding: .8rem; border: 1px solid var(--border, #dce3dc); border-radius: 8px; }
+.fe-review-export { margin: .75rem 0; }
+.fe-review-export summary { cursor: pointer; font-size: .8rem; padding: .4rem 0; }
+.fe-review-draft { font-family: inherit; white-space: pre-wrap; overflow-wrap: anywhere; font-size: .78rem; line-height: 1.55; margin: .5rem 0; padding: .9rem; background: var(--surface-muted, #f2f5ef); border-radius: 8px; max-height: 28rem; overflow: auto; }
+.fe-review-copy { min-height: 42px; border: 0; border-radius: 7px; background: var(--accent, #386c4d); color: #fff; padding: .7rem 1rem; font: inherit; font-size: .82rem; font-weight: 650; cursor: pointer; }
+.fe-review-copy:disabled { opacity: .5; cursor: default; }
+.fe-review-copy:focus-visible, .fe-review-export summary:focus-visible { outline: 2px solid var(--accent, #386c4d); outline-offset: 3px; }
+.fe-review-feedback { font-size: .78rem; line-height: 1.5; color: var(--text-secondary, #58645e); margin: .65rem 0 0; overflow-wrap: anywhere; }
+@media (max-width: 480px) {
+  .fe-review-fact, .fe-review-candidate, .fe-review-handoff-summary { padding: .8rem; }
+  .fe-review-tasks li { gap: .4rem; }
+  .fe-review-owner { flex-basis: 70px; font-size: .63rem; }
+  .fe-review-copy { width: 100%; }
+}

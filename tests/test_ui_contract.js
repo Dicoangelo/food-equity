@@ -68,6 +68,15 @@ assert.equal(context.deadlinePresentation('2026-10-20T20:00:00Z',Date.parse('202
 assert.equal(context.deadlinePresentation('invalid'),null);
 context.refreshDeadlineDisplay();
 assert.equal(context.buildRequest().deadline_at,req.deadline_at,'Refreshing a clock display cannot reanchor its deadline');
+assert(nodes.get('input-hours').classList.contains('hidden'),'Fixed clocks use a readable duration instead of the canonical numeric input');
+assert.match(nodes.get('pickup-window-summary').textContent,/remaining/);
+const beforeEditor=context.buildRequest();
+context.editPickupWindow();
+assert.equal(nodes.get('input-hours').classList.contains('hidden'),false,'An explicit edit action reveals the original window input');
+context.refreshDeadlineDisplay();
+assert.equal(nodes.get('input-hours').classList.contains('hidden'),false,'Clock ticks cannot close an active window editor');
+assert.deepEqual(context.buildRequest(),beforeEditor,'Opening and refreshing the editor cannot change the clock or request');
+
 const originalDate=context.Date;
 const elapsedNow=Date.now()+30*60000;
 context.Date=class extends Date {static now(){return elapsedNow;}};
@@ -332,17 +341,14 @@ async function testRescueWorkflow() {
   assert.equal(nodes.get('action-handoff').classList.contains('hidden'),false);
   let copied=[];
   context.navigator.clipboard={writeText:async text=>copied.push(text)};
+  assert.match(context.handoffText(payload),/Available backups: One actual backup\n/);
   await context.copyMatchBrief();
-  assert.match(copied[0],/Available backups: One actual backup\n/);
-  assert.match(copied[0],/Generation mode: deterministic_fallback/);
-  assert.match(copied[0],/Generated profiles; verify with recipient/);
-  assert.match(nodes.get('handoff-feedback').textContent,/no outreach was sent/);
-  assert.equal(nodes.get('step-handoff').getAttribute('aria-current'),'step');
   await context.copyEmail();
-  assert.equal(copied[1],'Email draft.');
+  assert.equal(copied.length,0,'Missing review module must fail closed, without a legacy clipboard bypass');
+  assert.match(nodes.get('handoff-feedback').textContent,/Review tools are unavailable/);
   context.offerChanged();
   await context.copyMatchBrief();
-  assert.equal(copied.length,2,'Changing an offer invalidates the previous copy payload');
+  assert.equal(copied.length,0,'Changing an offer cannot restore a copy bypass');
   assert.equal(nodes.get('step-handoff').disabled,true);
   assert.equal(nodes.get('brief-container').classList.contains('hidden'),true);
 
@@ -429,7 +435,7 @@ async function testVoiceIntake() {
   assert.equal(audioContexts[0].lastSource.started,true);
   context.retireVoiceOutput();
   assert.equal(audioContexts[0].lastSource.stopped,true,'Model interruption cancels queued speech');
-  const fields={...scenario,posting_text:attack,deadline_at:new Date(Date.now()+3*3600000).toISOString(),hours_remaining:3};
+  const fields={...scenario,posting_text:attack,deadline_at:new Date(Date.now()+3*3600000).toISOString(),hours_remaining:2.999826625555556};
   const draft={type:'draft',context_only:true,draft_id:'draft-one',draft_version:2,fields,missing_fields:[],ready_for_review:true,deadline_changed:true};
   socket.receive(draft);
   assert.equal(nodes.get('voice-apply').disabled,true,'Seeded form context must not be presented as an agent proposal');
@@ -460,6 +466,9 @@ async function testVoiceIntake() {
   assert(calls.every(url=>url==='/api/live/config'),'Voice Start, draft and Apply must not call the matching API');
   let request=context.buildRequest();
   assert.equal(request.deadline_at,fields.deadline_at,'Apply must preserve the exact server deadline string');
+  assert(nodes.get('input-hours').classList.contains('hidden'),'Reviewed Live hours are masked with the readable fixed clock');
+  assert.equal(Number(nodes.get('input-hours').value),fields.hours_remaining,'Presentation never rounds canonical request hours');
+
   assert.equal(request.posting_text,attack);
   nodes.get('input-text').value='Reviewed bread offer with updated packaging';
   context.offerChanged();

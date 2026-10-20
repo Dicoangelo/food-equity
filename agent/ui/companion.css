@@ -1,0 +1,16 @@
+/* Original sage/teal rescue companion; controls reserve space instead of covering content. */
+.has-food-companion {padding-bottom:190px!important}
+.food-companion {position:fixed;right:22px;bottom:max(16px,env(safe-area-inset-bottom));z-index:90;display:flex;gap:12px;width:min(390px,calc(100vw - 32px));padding:12px;border:1px solid #b9d9cf;border-radius:22px;background:#f8fffc;box-shadow:0 12px 40px #163c3220;color:#1a3038}
+.companion-content {min-width:0;flex:1}.companion-content>strong {font-size:14px;line-height:1.3}
+.companion-status {font-size:11px;line-height:1.4;color:#4e656e;margin:3px 0 7px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.companion-controls {display:flex;gap:5px;flex-wrap:wrap}.food-companion button {min-width:44px;min-height:44px;padding:6px 10px;border:1px solid #bdd7cf;border-radius:12px;background:white;color:#175f54;font-family:inherit;font-weight:600;font-size:12px;line-height:1.2;cursor:pointer}.food-companion button:disabled {opacity:.55;cursor:default}
+.food-companion button[data-companion-action=stop] {background:#ad3f4a;color:white;border-color:#ad3f4a}.food-companion button[data-companion-action=talk]:not(:disabled) {background:#126e64;color:white;border-color:#126e64}.food-companion button:focus-visible {outline:3px solid #1f8b78;outline-offset:2px}
+.companion-character {width:44px;height:58px;flex:none;position:relative;align-self:center;animation:companion-bob 4s ease-in-out infinite}
+.companion-face {position:absolute;inset:14px 0 0;border-radius:19px 19px 16px 16px;background:linear-gradient(145deg,#a9dfc5,#4ba98e);border:2px solid #247e68;box-shadow:inset 0 -5px #247e681a}
+.companion-leaf {position:absolute;top:2px;left:21px;width:21px;height:13px;background:#78bb77;border:2px solid #347d54;border-radius:2px 16px 2px 16px;transform:rotate(-28deg)}
+.companion-eye {position:absolute;top:31px;width:5px;height:8px;border-radius:50%;background:#174a40;z-index:1;animation:companion-blink 6s infinite}.eye-left {left:12px}.eye-right {right:12px}
+.food-companion[data-state=microphone] .companion-face {box-shadow:0 0 0 6px #2aab8e25;animation:companion-listen 1.8s ease-in-out infinite}.food-companion[data-state=review] .companion-leaf {background:#ecc67b}
+.food-companion.companion-in-dialog {position:static;flex:0 0 auto;z-index:1;width:auto;margin:8px 14px max(10px,env(safe-area-inset-bottom));box-shadow:none}
+@keyframes companion-bob {50%{transform:translateY(-4px)}}@keyframes companion-blink {0%,43%,47%,100%{transform:scaleY(1)}45%{transform:scaleY(.12)}}@keyframes companion-listen {50%{box-shadow:0 0 0 9px #2aab8e12}}
+@media(max-width:600px){.food-companion{right:10px;bottom:max(10px,env(safe-area-inset-bottom));width:calc(100vw - 20px);padding:10px;gap:8px;border-radius:18px}.companion-character{width:38px;transform:scale(.9)}.food-companion button{padding:6px 8px;font-size:11px}.has-food-companion{padding-bottom:210px!important}.food-companion.companion-in-dialog{width:auto;margin:8px 10px max(10px,env(safe-area-inset-bottom))}}
+@media(prefers-reduced-motion:reduce){.food-companion *{animation:none!important;transition:none!important}}

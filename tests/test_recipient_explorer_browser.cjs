@@ -11,8 +11,8 @@ const html = source.split('html_content = r"""')[1].split('"""')[0];
 function fixtureHtml() {
   if (!serveOnly) return html;
   const current = fs.readFileSync(path.join(root, 'agent/api.py'), 'utf8').split('html_content = r"""')[1].split('"""')[0];
-  const banner = '<div id="local-review-banner" role="status" style="position:fixed;bottom:12px;left:50%;transform:translateX(-50%);z-index:20000;max-width:calc(100vw - 24px);box-sizing:border-box;padding:9px 16px;border:1px solid #fbbf24;border-radius:8px;background:#422006;color:#fef3c7;font:600 13px/1.4 system-ui;text-align:center;pointer-events:none">Local review · sample data · no live checks</div>';
-  return current.replace('</body>', banner + '</body>');
+  const banner = '<div id="local-review-banner" role="status" style="position:relative;margin:8px auto;z-index:1;max-width:calc(100vw - 24px);box-sizing:border-box;padding:9px 16px;border:1px solid #fbbf24;border-radius:8px;background:#422006;color:#fef3c7;font:600 13px/1.4 system-ui;text-align:center;pointer-events:none">Local review · sample data · no live checks</div>';
+  return current.replace(/(<body[^>]*>)/, '$1' + banner);
 }
 const scenarios = JSON.parse(source.match(/SAMPLE_SCENARIOS = (\[[\s\S]*?\n\])/)[1]);
 const cityRows = [
@@ -40,8 +40,8 @@ const server = http.createServer((req,res) => {
   if(req.url === '/') {res.setHeader('content-type','text/html');return res.end(fixtureHtml());}
   if(req.url.startsWith('/ui/')) {
     const name=req.url.slice('/ui/'.length);
-    if(!['alert-intake.js','recipient-explorer.js','recipient-explorer.css','offer-workflow.js','source-state.js','view-context.js','workspace.css','workspace.js'].includes(name)) {res.writeHead(404);return res.end();}
-    res.setHeader('content-type',name.endsWith('.js')?'text/javascript':'text/css');
+    if(!['cinematic-intro.js','cinematic-intro.css','food-equity-story-v1.mp4','intake-review.js','intake-review.css','food-rescue-network.png','review-crate-spot.png','companion.js','companion.css','alert-intake.js','recipient-explorer.js','recipient-explorer.css','offer-workflow.js','source-state.js','view-context.js','workspace.css','workspace.js'].includes(name)) {res.writeHead(404);return res.end();}
+    res.setHeader('content-type',name.endsWith('.mp4')?'video/mp4':name.endsWith('.png')?'image/png':name.endsWith('.js')?'text/javascript':'text/css');
     return res.end(fs.readFileSync(path.join(root,'agent/ui',name)));
   }
   if(req.url === '/api/scenarios') return json(scenarios);
@@ -60,7 +60,7 @@ const server = http.createServer((req,res) => {
         composite_score:.99,reason_codes:['acceptance_confirmation_required'],elimination_reasons:['Receiving-site storage is unknown.']};
       const payload={status:'draft',generation_mode:'deterministic_fallback',...timing,winner,runners_up:[backup],
         pending_confirmation:[pending],eliminated_decoys:[],
-        donor:{name:offer.donor_name,latitude:offer.donor_lat,longitude:offer.donor_lon,
+        donor:{name:offer.donor_name,posting_text:offer.posting_text,latitude:offer.donor_lat,longitude:offer.donor_lon,
           pallet_count:offer.pallet_count,required_storage:offer.required_storage,deadline_at:offer.deadline_at},
         match_brief:{drafted_sms_outreach:'Please confirm acceptance.',drafted_email_outreach:'Please review capacity.'}};
       res.setHeader('content-type','application/x-ndjson');
@@ -279,6 +279,7 @@ async function run() {
       await page.locator('#brief-container').waitFor({state:'visible'});
       assert.match(await page.locator('#workspace-clock').innerText(),/^Deadline ·/);
       const clockCheckCalls=apiCount();
+      await page.locator('#edit-pickup-window').click();
       await page.locator('#input-hours').fill('2');
       await page.waitForFunction(()=>document.getElementById('workspace-clock').textContent==='2h pickup window');
       assert(await page.locator('#review-clock').evaluate(el=>el.hidden||el.classList.contains('hidden')),'Changing hours invalidates the previous fixed deadline display');
