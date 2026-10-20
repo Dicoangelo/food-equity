@@ -89,6 +89,16 @@ class AuditTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(all(r["mcp_succeeded"] for r in result["results"]))
         self.assertNotIn('"embedding"', json.dumps(result))
 
+    async def test_original_posting_contents_reach_acceptance_gates(self):
+        source = postings()
+        source[0]["posting_text"] = "Chilled pork for donation"
+        restricted = dict(CANDIDATE, profile_text="We cannot accept pork or uncertified meat.")
+        result, _ = await self.execute(FakeTool(rows=[restricted]), source=source)
+        first = result["results"][0]
+        self.assertEqual(first["status"], "no_match")
+        self.assertIn("recipient_food_restriction", first["reason_codes"])
+        self.assertEqual(first["rejected"][0]["recipient_id"], CANDIDATE["recipient_id"])
+
     async def test_720_hour_source_clock_is_not_api_clamped(self):
         result, _ = await self.execute()
         scenario = result["results"][8]["scenario"]

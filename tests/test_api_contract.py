@@ -1,6 +1,7 @@
 """Offline API contract tests: no cloud SDK or credential discovery."""
 import importlib.util
 import json
+import subprocess
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import AsyncMock
@@ -31,11 +32,26 @@ def offer():
 
 def test_health_and_ui_do_not_call_broker(client):
     http, broker = client
-    assert http.get('/healthz').json() == {"status": "ok", "cloud_dependencies": "not_checked"}
+    expected = {"status": "ok", "cloud_dependencies": "not_checked"}
+    for path in ('/healthz', '/api/health'):
+        response = http.get(path)
+        assert response.status_code == 200
+        assert response.json() == expected
+    assert '/api/health' in http.get('/openapi.json').json()['paths']
     response = http.get('/')
     assert response.status_code == 200
     assert "119 Profiles Ready" not in response.text
     assert "illustrative straight-line connection" in response.text
+    broker.broker_posting_async.assert_not_called()
+
+
+def test_served_inline_javascript_parses(client):
+    """Catch Python string escaping that can break otherwise valid source JS."""
+    http, broker = client
+    html = http.get('/').text
+    script = html.split('  <!-- Leaflet & App JS -->')[1].split('<script>')[1].split('</script>')[0]
+    checked = subprocess.run(['node', '--check'], input=script, text=True, capture_output=True)
+    assert checked.returncode == 0, checked.stderr
     broker.broker_posting_async.assert_not_called()
 
 
@@ -80,6 +96,7 @@ def test_fixed_deadline_reduces_remaining_window(client):
     assert http.post('/api/match', json=payload).status_code == 200
     remaining = broker.broker_posting_async.call_args.kwargs['hours_remaining']
     assert 0.99 < remaining <= 1.0
+    assert broker.broker_posting_async.call_args.kwargs['deadline_at'].isoformat() == payload['deadline_at']
 
 
 @pytest.mark.parametrize('deadline', [

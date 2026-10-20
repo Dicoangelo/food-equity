@@ -133,6 +133,44 @@ async def test_empty_real_retrieval_has_no_winner():
     assert result["winner"] is None
 
 
+@pytest.mark.asyncio
+async def test_offer_restrictions_reach_initial_and_final_ranking():
+    from agent.matcher import SurplusMatcher
+
+    class RecordingMatcher(SurplusMatcher):
+        def __init__(self):
+            super().__init__()
+            self.offers = []
+
+        def score_and_rank(self, *args, **kwargs):
+            self.offers.append(kwargs.get("posting_text"))
+            return super().score_and_rank(*args, **kwargs)
+
+    restricted = {**CANDIDATE, "profile_text": "We cannot accept pork or uncertified meat."}
+    alternative = {**CANDIDATE, "recipient_id": 2, "name": "General recipient", "distance": .4}
+    toolset = FakeToolset(FakeVectorTool(payload=json.dumps([restricted, alternative])))
+    matcher = RecordingMatcher()
+    agent = FoodBrokerAgent(model=ScriptedModel(), toolset_factory=lambda: toolset, matcher=matcher)
+    result = await agent.broker_posting_async("A pallet of chilled pork", hours_remaining=6)
+    assert matcher.offers == ["A pallet of chilled pork"] * 2
+    assert result["winner"]["recipient_id"] == 2
+    assert result["runners_up"] == []
+    assert result["eliminated_decoys"][0]["acceptance_check"] == "explicit_conflict"
+    assert "recipient_food_restriction" in result["eliminated_decoys"][0]["reason_codes"]
+
+
+@pytest.mark.asyncio
+async def test_certification_dependent_result_stays_pending_without_a_brief():
+    restricted = {**CANDIDATE, "profile_text": "Meat must be certified or we cannot distribute it."}
+    toolset = FakeToolset(FakeVectorTool(payload=json.dumps([restricted])))
+    agent = FoodBrokerAgent(model=ScriptedModel(), toolset_factory=lambda: toolset)
+    result = await agent.broker_posting_async("A pallet of certified halal chicken", hours_remaining=6)
+    assert result["status"] == "no_viable_match"
+    assert "match_brief" not in result
+    assert result["winner"] is None
+    assert result["pending_confirmation"][0]["acceptance_check"] == "confirmation_required"
+
+
 @pytest.mark.parametrize("payload", [
     {"error": "denied"}, {"isError": True}, [{"name": "No id"}], "garbage",
     [{"recipient_id": i} for i in range(21)],
@@ -176,6 +214,46 @@ def advancing_clock(monkeypatch, elapsed_hours):
         def now(tz=None):
             return next(times)
     monkeypatch.setattr(broker_module, "datetime", Clock)
+
+
+def test_absolute_deadline_survives_lazy_broker_initialization_delay(monkeypatch):
+    from datetime import datetime, timedelta, timezone
+    from fastapi.testclient import TestClient
+    from agent import api as api_module
+    import agent.broker as broker_module
+
+    start = datetime(2026, 10, 20, 15, 0, tzinfo=timezone.utc)
+    fixed_deadline = start + timedelta(hours=6)
+    clock = {"now": start}
+
+    class Clock:
+        @staticmethod
+        def now(tz=None):
+            return clock["now"]
+
+    agent = FoodBrokerAgent(
+        model=ScriptedModel(), toolset_factory=lambda: FakeToolset(FakeVectorTool()),
+    )
+
+    def initialize_after_delay():
+        clock["now"] = start + timedelta(hours=1)
+        return agent
+
+    monkeypatch.setattr(api_module, "datetime", Clock)
+    monkeypatch.setattr(broker_module, "datetime", Clock)
+    monkeypatch.setattr(api_module, "get_broker_agent", initialize_after_delay)
+    response = TestClient(api_module.app).post("/api/match", json={
+        "posting_text": "Chilled spinach", "required_storage": "cold", "pallet_count": 1,
+        "hours_remaining": 6, "deadline_at": fixed_deadline.isoformat(),
+        "donor_name": "Fixture grocer", "donor_lat": 47.6, "donor_lon": -122.3,
+    })
+    assert response.status_code == 200
+    result = response.json()
+    assert result["status"] == "success"
+    assert result["donor"]["deadline_at"] == fixed_deadline.isoformat()
+    assert result["donor"]["hours_remaining"] == 5
+    assert result["winner"]["time_margin_hours"] == 4
+    assert result["winner"]["deadline_at"] == fixed_deadline.isoformat()
 
 
 @pytest.mark.asyncio

@@ -18,6 +18,140 @@ COLD_CAPABILITIES = {"walk-in", "commercial", "domestic", "medical", "vehicle"}
 WEEKDAYS = ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")
 
 
+def _offer_mentions(text, terms):
+    """Literal positive mentions, not an inferred product/certification classifier."""
+    for match in re.finditer(r"\b(?:" + terms + r")\b", text):
+        prefix, suffix = text[:match.start()], text[match.end():]
+        if re.match(r"[- ]free\b", suffix):
+            continue
+        if re.search(r"\b(?:(?:no|without|free of|does not contain)\s+(?:any\s+)?|not\s+)$", prefix):
+            continue
+        if re.search(r"\b(?:vegan|vegetarian|plant[- ]based|mock|imitation)\s+(?:(?:smoked|sliced|ground)\s+){0,2}$", prefix):
+            continue
+        return True
+    return False
+
+
+def _acceptance_constraints(profile, posting_text, storage):
+    """Bounded guards for explicit supplied profile clauses, never a food-safety approval.
+
+    Rules come from data/profile_components.json's needs/openers. Preferences,
+    organization identity and community demographics do not imply prohibitions.
+    Unknown certification, manifests and unsupported refusal clauses stay pending.
+    """
+    policies = {
+        "pork": ("cannot accept pork", "do not accept pork"),
+        "meat": ("cannot accept meat", "vegetarian food only"),
+        "meat_certification": ("cannot accept pork or uncertified meat", "uncertified protein has to be declined",
+                               "uncertified meat cannot be distributed", "meat must be certified"),
+        "all_certification": ("certified items only", "certification is not optional"),
+        "animal_documentation": ("anything animal-derived needs documentation",),
+        "labels": ("unmarked goods we have to refuse",),
+        "no_food": ("cannot handle food safely", "cannot accept food", "do not accept food"),
+        "infant_only": ("infant essentials only", "infant supplies and shelf-stable formula only",
+                        "non-food infant essentials", "non-food baby supplies"),
+        "nonperishable": ("cannot take anything perishable", "non-perishable bulk only",
+                          "nothing perishable", "no fresh food"),
+        "formula_packaging": ("formula must be sealed and in date",),
+    }
+    clauses = re.split(r"[.;!?\n]", profile)
+    conditional = [clause.strip() for clause in clauses
+                   if re.search(r"\b(?:unless|except|without|until|if|when)\b", clause)
+                   and any(phrase in clause for phrases in policies.values() for phrase in phrases)]
+    matched = {policy: [phrase for phrase in phrases
+                       if any(phrase in clause and clause.strip() not in conditional for clause in clauses)]
+               for policy, phrases in policies.items()}
+    # "Cannot accept food containing nuts" is a conditional food restriction,
+    # not a ban on every food. Only complete no-food clauses establish that ban.
+    matched["no_food"] = [
+        phrase for phrase in matched["no_food"]
+        if any(phrase in clause and re.fullmatch(r"\s*(?:(?:safely|at all)\s*)?",
+                                                 clause.split(phrase, 1)[1]) for clause in clauses)
+    ]
+    matched = {policy: phrases for policy, phrases in matched.items() if phrases}
+    # Do not silently treat an unsupported explicit acceptance refusal as satisfied.
+    refusal_clauses = re.findall(r"[^.;!?\n]*\b(?:cannot|can't|do not|don't) (?:accept|handle|distribute)[^.;!?\n]*", profile)
+    unsupported = []
+    for clause in refusal_clauses:
+        phrases = [phrase for values in matched.values() for phrase in values if phrase in clause]
+        # A recognized prefix must not hide another refusal, e.g. "pork or nuts".
+        if not phrases or clause.split(max(phrases, key=len), 1)[1].strip():
+            unsupported.append(clause.strip())
+    # This supplied clause follows "Meat must be certified" in the same sentence.
+    if "meat_certification" in matched:
+        unsupported = [c for c in unsupported if "cannot distribute it" not in c]
+    unsupported = list(dict.fromkeys(unsupported + conditional))
+    evidence = [phrase for phrases in matched.values() for phrase in phrases] + unsupported
+    reasons, missing = [], []
+    if not evidence:
+        return reasons, missing, [], "no_supported_restriction_detected"
+    offer = posting_text.lower().strip() if isinstance(posting_text, str) else ""
+    if not offer:
+        return reasons, ["Offer contents are required to evaluate the recipient's acceptance restrictions."], evidence, "offer_details_required"
+
+    pork = _offer_mentions(offer, "pork")
+    meat = _offer_mentions(offer, "pork|beef|chicken|turkey|lamb|mutton|venison|veal|duck|meat|poultry|bacon|ham")
+    animal = meat or _offer_mentions(offer, "milk|yogurt|yoghurt|cheese|eggs?|fish|salmon|tuna|seafood|shrimp")
+    ordinary_food = animal or _offer_mentions(offer, "spinach|lettuce|greens|salad|produce|vegetables?|fruit|berries|strawberries|potatoes|carrots|tomatoes|apples|bananas|bread|sourdough|rice|pasta|beans|chickpeas|lentils|tofu")
+    infant_supply = _offer_mentions(offer, "diapers?|wipes|formula|toiletries")
+    formula = _offer_mentions(offer, "formula")
+    known_contents = ordinary_food or infant_supply
+    ambiguous_contents = _offer_mentions(offer, "protein") or bool(
+        re.search(r"\b(?:mixed|assorted) (?:load|food|goods|donations|items|surplus)\b", offer))
+
+    if "pork" in matched and pork:
+        reasons.append("Recipient explicitly refuses pork; the offered contents include pork.")
+    elif "pork" in matched and (not known_contents or ambiguous_contents or _offer_mentions(offer, "bacon|ham")):
+        missing.append("Confirm the full product ingredients against the recipient's explicit pork refusal.")
+    if "meat" in matched and meat:
+        reasons.append("Recipient explicitly refuses meat; the offered contents include meat.")
+    if "meat_certification" in matched and meat:
+        if re.search(r"\b(?:uncertified|not certified) (?:meat|protein|pork|beef|chicken|turkey|lamb)\b|\b(?:meat|protein|beef|chicken) (?:is )?(?:uncertified|not certified)\b", offer):
+            reasons.append("Recipient refuses uncertified meat/protein; the offer explicitly declares it uncertified.")
+        else:
+            missing.append("Recipient requires meat certification; verify the relevant certification and full manifest. A donor claim is not verification.")
+    elif "meat_certification" in matched and (not known_contents or ambiguous_contents):
+        missing.append("Confirm whether the load contains meat/protein requiring certification.")
+    if "all_certification" in matched:
+        missing.append("Recipient requires certified items; verify the applicable certification for the complete load.")
+    if "animal_documentation" in matched and (animal or not known_contents or ambiguous_contents):
+        missing.append("Recipient requires animal-derived product documentation; verify contents and documentation.")
+    if "labels" in matched:
+        if re.search(r"\b(?:unmarked|unlabeled|unlabelled) (?:goods|items|load|food)\b", offer):
+            reasons.append("Recipient explicitly refuses unmarked goods; the offer declares an unmarked/unlabeled load.")
+        else:
+            missing.append("Recipient requires labeled goods; verify labels and the complete manifest.")
+    if "no_food" in matched:
+        if ordinary_food:
+            reasons.append("Recipient explicitly says it cannot handle food; the offer includes food.")
+        elif formula or not known_contents or ambiguous_contents:
+            missing.append("Recipient says it cannot handle food; confirm whether these exact infant products are an accepted exception.")
+    if "infant_only" in matched:
+        if ordinary_food:
+            reasons.append("Recipient accepts infant essentials only; the offer includes other food.")
+        elif not infant_supply or ambiguous_contents:
+            missing.append("Confirm that every offered item is an accepted infant essential.")
+    if "nonperishable" in matched:
+        fresh_food = _offer_mentions(offer, r"(?:fresh|raw)\s+(?:(?:organic|washed|chopped|whole|baby)\s+){0,2}(?:produce|spinach|lettuce|greens|vegetables?|fruit|berries|strawberries|tomatoes|milk|meat|beef|chicken|pork)")
+        if storage in {"cold", "frozen"} or fresh_food:
+            reasons.append("Recipient excludes perishables/fresh food; the offer declares fresh food or a cold-chain requirement.")
+        elif ambiguous_contents:
+            missing.append("Confirm every item in the mixed load meets the recipient's nonperishable-only restriction.")
+        elif not re.search(r"\b(?:shelf[- ]stable|non[- ]perishable|canned|dry goods|sealed formula|diapers?|wipes)\b", offer):
+            missing.append("Recipient excludes perishables; confirm product state and remaining shelf life, without changing the donor deadline.")
+    if "formula_packaging" in matched and (formula or not known_contents):
+        if re.search(r"\b(?:opened|unsealed|expired) (?:infant )?formula\b", offer):
+            reasons.append("Recipient requires sealed, in-date formula; the offer explicitly contradicts that requirement.")
+        else:
+            missing.append("Verify that the formula is sealed, in date and in its original packaging.")
+    if unsupported:
+        missing.append("An explicit recipient acceptance restriction needs review: " + "; ".join(unsupported))
+    if "meat" in matched and (not known_contents or ambiguous_contents):
+        missing.append("Confirm the full product ingredients against the recipient's dietary restrictions.")
+    status = "explicit_conflict" if reasons else "confirmation_required" if missing else "no_explicit_conflict_detected"
+    return reasons, missing, evidence, status
+
+
 def _number(value):
     if value is None or isinstance(value, bool):
         return None
@@ -95,7 +229,7 @@ class SurplusMatcher:
     def evaluate_constraints(self, candidate: Dict[str, Any], required_storage: Optional[str] = "cold",
                              pallet_count: float = 1.0, hours_remaining: float = 6.0, *,
                              evaluated_at: Any = None, deadline_at: Any = None,
-                             min_buffer_hours: float = 0.25) -> Dict[str, Any]:
+                             min_buffer_hours: float = 0.25, posting_text: Optional[str] = None) -> Dict[str, Any]:
         """The 15-minute buffer is a coordination policy, not a food-safety claim.
 
         Return deadline_at on subsequent requests to preserve the original clock.
@@ -138,6 +272,13 @@ class SurplusMatcher:
         cold = str(candidate.get("cold_storage") or "").strip().lower()
         frozen = candidate.get("frozen_storage")
         profile = str(candidate.get("profile_text") or "").lower()
+        food_reasons, food_missing, food_evidence, acceptance_check = _acceptance_constraints(profile, posting_text, storage)
+        reasons.extend(food_reasons)
+        missing.extend(food_missing)
+        if food_reasons:
+            codes.append("recipient_food_restriction")
+        if food_missing:
+            codes.append("acceptance_confirmation_required")
         if storage == "cold":
             if cold in {"none", "dry", "ambient"}:
                 reasons.append("Storage incompatible: chilled food requires refrigeration.")
@@ -202,12 +343,13 @@ class SurplusMatcher:
                 "timing_basis": timing_basis, "evaluated_at": now.isoformat(),
                 "deadline_at": deadline.isoformat() if deadline else None,
                 "clock_basis": "fixed_deadline" if deadline_at is not None else "relative_offer",
-                "min_buffer_hours": buffer, "profile_source": source}
+                "min_buffer_hours": buffer, "profile_source": source,
+                "acceptance_check": acceptance_check, "acceptance_evidence": food_evidence}
 
     def score_and_rank(self, candidates: List[Dict[str, Any]], required_storage: str = "cold",
                        pallet_count: float = 1.0, hours_remaining: float = 6.0, *,
                        evaluated_at: Any = None, deadline_at: Any = None,
-                       min_buffer_hours: float = 0.25) -> Dict[str, Any]:
+                       min_buffer_hours: float = 0.25, posting_text: Optional[str] = None) -> Dict[str, Any]:
         now = _timestamp(evaluated_at) if evaluated_at is not None else datetime.now(timezone.utc)
         viable, eliminated, pending, seen = [], [], [], set()
         for c in candidates:
@@ -217,7 +359,7 @@ class SurplusMatcher:
                 continue
             seen.add(key)
             check = self.evaluate_constraints(c, required_storage, pallet_count, hours_remaining,
-                evaluated_at=now, deadline_at=deadline_at, min_buffer_hours=min_buffer_hours)
+                evaluated_at=now, deadline_at=deadline_at, min_buffer_hours=min_buffer_hours, posting_text=posting_text)
             distance = _number(c.get("distance"))
             if distance is None or not 0 <= distance <= 2:
                 check["viable"] = False
@@ -247,6 +389,7 @@ class SurplusMatcher:
                 "constraint_status": check["status"], "warnings": warnings, "requires_confirmation": True,
                 "confirmations_required": check["confirmations_required"], "time_margin_hours": check["time_margin_hours"],
                 "timing_basis": check["timing_basis"], "evaluated_at": check["evaluated_at"],
+                "acceptance_check": check["acceptance_check"], "acceptance_evidence": check["acceptance_evidence"],
                 "clock_basis": check["clock_basis"],
                 "deadline_at": check["deadline_at"], "reason_codes": check["reason_codes"]})
             if check["viable"]:

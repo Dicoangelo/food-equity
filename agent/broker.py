@@ -250,6 +250,7 @@ class FoodBrokerAgent:
         self, posting_text: str, required_storage: str = "cold", pallet_count: float = 1.0,
         hours_remaining: float = 6.0, donor_name: str = "Seattle Metro Grocer",
         donor_lat: float = 47.6062, donor_lon: float = -122.3321,
+        *, deadline_at: datetime | str | None = None,
     ) -> dict:
         donor = {
             "name": donor_name, "latitude": donor_lat, "longitude": donor_lon,
@@ -260,8 +261,18 @@ class FoodBrokerAgent:
         state: dict = {}
         started_at = datetime.now(timezone.utc)
         started = started_at.isoformat()
-        deadline_at = started_at + timedelta(hours=hours_remaining)
+        relative_deadline = started_at + timedelta(hours=hours_remaining)
+        if deadline_at is not None:
+            if isinstance(deadline_at, str):
+                deadline_at = datetime.fromisoformat(deadline_at.replace("Z", "+00:00"))
+            if not hasattr(deadline_at, "utcoffset") or deadline_at.utcoffset() is None:
+                raise ValueError("deadline_at must include its timezone")
+            # Keep the caller's fixed deadline across lazy initialization/queue time.
+            deadline_at = min(relative_deadline, deadline_at.astimezone(timezone.utc))
+        else:
+            deadline_at = relative_deadline
         donor["deadline_at"] = deadline_at.isoformat()
+        donor["hours_remaining"] = max(0.0, (deadline_at - started_at).total_seconds() / 3600)
         toolset, error_code, final_text = None, None, ""
 
         def record(stage: str, **details):
@@ -297,6 +308,7 @@ class FoodBrokerAgent:
                     candidates, required_storage=required_storage, pallet_count=pallet_count,
                     hours_remaining=hours_remaining,
                     deadline_at=deadline_at, evaluated_at=datetime.now(timezone.utc),
+                    posting_text=posting_text,
                 )
                 state["ranking"] = ranking
                 record("deterministic_constraints",
@@ -364,6 +376,7 @@ class FoodBrokerAgent:
                 state["candidates"], required_storage=required_storage,
                 pallet_count=pallet_count, hours_remaining=hours_remaining,
                 deadline_at=deadline_at, evaluated_at=evaluated_at,
+                posting_text=posting_text,
             )
             current_id = (state["ranking"].get("winner") or {}).get("recipient_id")
             winner_changed = previous_id != current_id
