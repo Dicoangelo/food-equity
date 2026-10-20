@@ -35,7 +35,7 @@ jobs:
           node-version: "22"
       - run: python -m pip install -r requirements-dev.txt
       - run: python -m pytest -q
-      - run: node --test tests/test_offer_workflow.js tests/test_ui_contract.js tests/test_recipient_explorer.js
+      - run: node --test tests/test_alert_intake.js tests/test_offer_workflow.js tests/test_ui_contract.js tests/test_recipient_explorer.js
       - run: bash -n scripts/deploy_cloud_run.sh && bash -n scripts/setup_github_deploy.sh
 
   deploy:
