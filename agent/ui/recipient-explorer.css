@@ -1,14 +1,14 @@
 /* Uses the coordinator workspace palette; operational status is always textual. */
 .recipient-browser { display:grid; grid-template-columns:minmax(0,1fr); gap:16px; min-width:0; }
-.recipient-directory { min-width:0; }
+.recipient-directory { min-width:0; padding:14px; border:1px solid var(--line-soft); border-radius:12px; background:#f7faf6; }
 .recipient-directory h3 { margin:0 0 8px; font-size:15px; font-weight:650; }
 .recipient-directory label { display:block; color:var(--secondary); font-size:13px; margin-bottom:4px; }
 .recipient-directory input, .recipient-directory select { width:100%; padding:8px 10px; }
 .recipient-filters { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px; margin:10px 0; }
 #recipient-count { margin:10px 0; color:var(--muted); font-size:12px; }
 #recipient-list { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:9px; max-height:420px; overflow-y:auto; padding:3px; scroll-padding:6px; }
-.recipient-card { display:flex; flex-direction:column; align-items:flex-start; gap:6px; width:100%; min-width:0; padding:13px; background:var(--surface); border:1px solid var(--line); border-radius:9px; text-align:left; color:var(--ink); overflow-wrap:anywhere; }
-.recipient-card:hover { border-color:var(--accent); background:#f8fbfc; }
+.recipient-card { display:flex; flex-direction:column; align-items:flex-start; gap:6px; width:100%; min-width:0; padding:13px; background:var(--surface); border:1px solid var(--line); border-radius:11px; box-shadow:0 2px 5px rgb(27 57 43 / 3%); text-align:left; color:var(--ink); overflow-wrap:anywhere; }
+.recipient-card:hover { border-color:var(--accent); background:#f1f7f1; box-shadow:0 3px 10px rgb(27 57 43 / 7%); }
 .recipient-card[aria-pressed="true"] { border:2px solid var(--accent); padding:12px; background:var(--selected); }
 .recipient-card-name { font-size:14px; line-height:1.4; font-weight:650; }
 .recipient-card-fact, .recipient-card-action { font-size:12px; line-height:1.55; }
@@ -28,7 +28,7 @@
 .recipient-backdrop.hidden { display:none; }
 #recipient-close { display:block; position:sticky; top:0; margin:0 0 12px auto; z-index:2; box-shadow:0 3px 10px rgb(24 43 58 / 8%); }
 #recipient-detail-content h2 { font-size:22px; line-height:1.25; font-weight:650; letter-spacing:-.02em; margin:0 0 8px; padding-right:4px; overflow-wrap:anywhere; }
-.recipient-section { border-top:1px solid var(--line); padding-top:16px; margin-top:18px; }
+.recipient-section { border-top:1px solid var(--line); padding-top:18px; margin-top:20px; }
 .recipient-section h3 { font-size:14px; font-weight:650; margin:0 0 9px; }
 .recipient-section p { margin:8px 0; }
 .recipient-section ul { padding-left:19px; margin:10px 0; font-size:13px; color:var(--secondary); list-style:disc; }
@@ -46,7 +46,7 @@
 .recipient-comparison { border:1px solid var(--line); border-radius:9px; padding:8px 12px; }
 .recipient-comparison > summary { color:var(--accent); font-weight:600; font-size:13px; }
 .recipient-comparison-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:12px; margin:12px 0; }
-.recipient-comparison-card { min-width:0; border:1px solid var(--line); border-radius:8px; padding:12px; background:var(--surface); overflow-wrap:anywhere; }
+.recipient-comparison-card { min-width:0; border:1px solid var(--line); border-radius:8px; padding:12px; background:#fbfdf9; overflow-wrap:anywhere; }
 .recipient-comparison-card h3 { font-weight:650; font-size:14px; margin-bottom:7px; }
 .recipient-comparison-card .recipient-badge { margin-right:4px; }
 .recipient-comparison-card .recipient-facts > div { grid-template-columns:1fr; gap:1px; }

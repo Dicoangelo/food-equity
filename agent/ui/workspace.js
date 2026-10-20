@@ -217,6 +217,25 @@
     return Boolean(drawer && !drawer.hidden);
   }
 
+  function prepareWorkspaceArtwork() {
+    const note = document.querySelector('.workspace-note');
+    const review = $('review-panel');
+    const mount = (host, className, source, decorate) => {
+      if (!host || host.querySelector(`.${className}`)) return;
+      const art = document.createElement('img');
+      art.className = className;
+      art.alt = '';
+      art.setAttribute('aria-hidden', 'true');
+      art.decoding = 'async';
+      art.onload = () => { if (decorate) host.classList.add('has-review-art'); };
+      art.onerror = () => { art.remove(); if (decorate) host.classList.remove('has-review-art'); };
+      art.src = source;
+      host.prepend(art);
+    };
+    mount(note, 'workspace-network-art', '/ui/food-rescue-network.png', false);
+    mount(review, 'workspace-review-art', '/ui/review-crate-spot.png', true);
+  }
+
   function prepareAssistantHelp() {
     const panel = $('voice-panel');
     const introduction = panel?.querySelector(':scope > p:first-of-type');
@@ -361,6 +380,7 @@
     if (initialized || !document.body) return;
     initialized = true;
     prepareAssistantHelp();
+    prepareWorkspaceArtwork();
     document.addEventListener('click', event => {
       const target = event.target instanceof Element ? event.target : event.target?.parentElement;
       if (!target) return;
