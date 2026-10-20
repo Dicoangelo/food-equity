@@ -341,17 +341,14 @@ async function testRescueWorkflow() {
   assert.equal(nodes.get('action-handoff').classList.contains('hidden'),false);
   let copied=[];
   context.navigator.clipboard={writeText:async text=>copied.push(text)};
+  assert.match(context.handoffText(payload),/Available backups: One actual backup\n/);
   await context.copyMatchBrief();
-  assert.match(copied[0],/Available backups: One actual backup\n/);
-  assert.match(copied[0],/Generation mode: deterministic_fallback/);
-  assert.match(copied[0],/Generated profiles; verify with recipient/);
-  assert.match(nodes.get('handoff-feedback').textContent,/no outreach was sent/);
-  assert.equal(nodes.get('step-handoff').getAttribute('aria-current'),'step');
   await context.copyEmail();
-  assert.equal(copied[1],'Email draft.');
+  assert.equal(copied.length,0,'Missing review module must fail closed, without a legacy clipboard bypass');
+  assert.match(nodes.get('handoff-feedback').textContent,/Review tools are unavailable/);
   context.offerChanged();
   await context.copyMatchBrief();
-  assert.equal(copied.length,2,'Changing an offer invalidates the previous copy payload');
+  assert.equal(copied.length,0,'Changing an offer cannot restore a copy bypass');
   assert.equal(nodes.get('step-handoff').disabled,true);
   assert.equal(nodes.get('brief-container').classList.contains('hidden'),true);
 
